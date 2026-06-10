@@ -1,0 +1,16 @@
+{
+  "generated_at": "2026-06-10T15:19:51.117199+00:00",
+  "code_version": "8fbd6cb",
+  "data_through": "2026-06-09",
+  "counts": {
+    "upcoming": 48,
+    "leaderboard": 6,
+    "scored": 384,
+    "calibration": 20
+  },
+  "models": [
+    "dixon_coles",
+    "elo_baseline"
+  ],
+  "notes": []
+}
