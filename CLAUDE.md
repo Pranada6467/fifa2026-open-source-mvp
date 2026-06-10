@@ -15,7 +15,7 @@ Full context: `docs/PLAN.md` (the approved engineering plan — source of truth)
 
 ## Current status (2026-06-10)
 **Block V (verification spike): COMPLETE — all 6 items pass, V4 user-verified.**
-**Block 0 (calibration spine): in progress.**
+**Block 0 (calibration spine): COMPLETE (T1–T8).**
 
 Done:
 - `ingest.py` (T1) — `data/processed/matches.parquet` from martj42.
@@ -43,12 +43,30 @@ Done:
   First readout (2026-06-10, 384 preds, 0 violations): pooled log-loss
   DC 0.973 < Elo 0.982 < uniform 1.099; DC wins 2014+2018, Elo wins 2022;
   calibration max |freq−p| 0.055 (Elo) / 0.099 (DC) in populated bins.
-- 51/51 tests passing.
+- `loop/predict.py` CLI (T8) — `python -m fifapreds.loop.predict [--days 8|--all]`:
+  fits both models, logs live predictions for upcoming WC fixtures; identical
+  claims (same match/model/hyperparams/training_cutoff) dedupe to a no-op.
+  First live claims logged 2026-06-10: 24 fixtures x 2 models.
+- `publish/artifacts.py` (T8) — exports committed `artifacts/` (upcoming,
+  leaderboard, calibration, scored parquets + meta.json) from the live +
+  backtest DBs; degrades gracefully when a source is missing.
+- `app/streamlit_app.py` (T8) — read-only viewer over `artifacts/` only
+  (override dir via env `FIFAPREDS_ARTIFACTS`; tested with streamlit AppTest).
+  Run: `.venv/bin/python -m streamlit run app/streamlit_app.py`.
+- 60/60 tests passing.
+
+Known model quirk (expected, monitored by the calibration loop): Dixon-Coles is
+overconfident at the extremes (backtest 0–0.1 bin: claimed 7.7%, happened 17.4%;
+e.g. it gives Qatar 2.3% vs Switzerland where Elo says 10%) — cross-confederation
+opponent pools are thin and xi-decay sharpens recent form. T13 variants compete
+on exactly this.
 
 Next, in order (see `docs/PLAN.md` → "Execution blocks"):
-- **T8** `app/streamlit_app.py` + `publish/artifacts.py` (read-only viewer).
-- Then **Block 1** (simulator: `sim/groups.py`, `sim/routing.py`, `sim/montecarlo.py`)
-  and **Block 2** (market-blend, technique leaderboard).
+- **Block 1** (simulator: `sim/groups.py` T9, `sim/routing.py` T10, `sim/montecarlo.py` T11)
+- **Block 2** (T12 market-blend, T13 model variants, T14 orchestrator).
+- Live cadence until then: after each match day run `loop.predict` →
+  `publish.artifacts` → commit `artifacts/` (scoring lands with T14's orchestrator;
+  `loop/score.py` can be run ad hoc via `score_pending`).
 
 ## Setup & run
 ```bash

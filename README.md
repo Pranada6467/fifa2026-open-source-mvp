@@ -21,6 +21,17 @@ python3 -m venv .venv
 Odds capture (optional): copy `.env.example` → `.env`, add a free
 [The Odds API](https://the-odds-api.com) key, then `python -m fifapreds.loop.odds`.
 
+## Live loop + viewer
+```bash
+.venv/bin/python -m fifapreds.loop.predict       # log predictions (8-day window)
+.venv/bin/python -m fifapreds.publish.artifacts  # export committed artifacts/
+.venv/bin/python -m streamlit run app/streamlit_app.py
+```
+The Streamlit app is a read-only viewer over `artifacts/` — to deploy, push to
+GitHub and point [Streamlit Community Cloud](https://share.streamlit.io) at
+`app/streamlit_app.py`; it redeploys whenever fresh artifacts are committed.
+Backtest gate: `.venv/bin/python -m fifapreds.backtest` (WC 2014/18/22 replay).
+
 ## Where things are
 - `src/fifapreds/` — the package (ingest, as-of layer, models, sim, loop, publish).
 - `scripts/` — reproducible data builders (bracket/routing, groups).

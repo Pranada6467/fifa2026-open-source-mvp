@@ -106,3 +106,81 @@ def predict_fixtures(
 ) -> list[int]:
     """Log one prediction per fixture row (kwargs as in log_prediction)."""
     return [log_prediction(conn, model, row, **kwargs) for _, row in fixtures.iterrows()]
+
+
+def _already_claimed(conn: sqlite3.Connection, model: Model, match_id: int) -> bool:
+    """True when this exact claim is already logged: same fixture, same model
+    config, same training cutoff. New results move the cutoff, so re-running
+    after match days re-predicts; re-running the same day is a no-op."""
+    row = conn.execute(
+        """SELECT 1 FROM predictions
+           WHERE match_id = ? AND model_id = ? AND hyperparams_hash = ?
+             AND training_cutoff = ? LIMIT 1""",
+        (match_id, model.model_id, model.hyperparams_hash,
+         model.trained_through.isoformat()),
+    ).fetchone()
+    return row is not None
+
+
+def predict_upcoming(
+    conn: sqlite3.Connection,
+    models: list[Model],
+    store,
+    *,
+    days: int | None = 8,
+    tournament: str = "FIFA World Cup",
+) -> dict[str, int]:
+    """Log predictions for upcoming tournament fixtures (the live PUBLISH feed).
+
+    Models must already be fitted. `days=None` covers every remaining fixture.
+    Returns {model_id: rows_logged}; duplicates of an identical claim are skipped.
+    """
+    init_predictions(conn)
+    start = pd.Timestamp.now().normalize()
+    end = None if days is None else start + pd.Timedelta(days=days)
+    fixtures = store.upcoming(start=start, end=end)
+    fixtures = fixtures[fixtures["tournament"] == tournament]
+    logged: dict[str, int] = {}
+    for model in models:
+        n = 0
+        for _, fixture in fixtures.iterrows():
+            if _already_claimed(conn, model, int(fixture["match_id"])):
+                continue
+            log_prediction(conn, model, fixture, context="live")
+            n += 1
+        logged[model.model_id] = n
+    return logged
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    from fifapreds import db
+    from fifapreds.asof import MatchStore
+    from fifapreds.models import BaselineElo, DixonColes
+
+    ap = argparse.ArgumentParser(
+        description="Log live predictions for upcoming World Cup fixtures.")
+    ap.add_argument("--days", type=int, default=8,
+                    help="kickoff window from today (default 8)")
+    ap.add_argument("--all", action="store_true",
+                    help="predict every remaining fixture, not just the window")
+    ap.add_argument("--db", default=None, help="SQLite path (default data/fifa2026.db)")
+    args = ap.parse_args(argv)
+
+    conn = db.connect(args.db)
+    store = MatchStore()
+    print(f"history through {store.played['date'].max().date()}")
+    models = []
+    for cls in (BaselineElo, DixonColes):
+        model = cls().fit(store.played)
+        models.append(model)
+        print(f"fitted {model.model_id} (hyperparams {model.hyperparams_hash})")
+    logged = predict_upcoming(conn, models, store, days=None if args.all else args.days)
+    for model_id, n in logged.items():
+        print(f"{model_id}: {n} new predictions logged")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
