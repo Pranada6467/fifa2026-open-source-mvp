@@ -42,3 +42,48 @@ CREATE INDEX IF NOT EXISTS idx_odds_captured ON odds_snapshots(captured_at);
 def init_odds(conn: sqlite3.Connection) -> None:
     conn.executescript(_ODDS_SCHEMA)
     conn.commit()
+
+
+# Predictions log (T5). Append-only: a prediction row is never mutated; its
+# grade lands in `scores` (one row per prediction, written once the result is
+# known). Provenance columns make every leaderboard entry auditable — which
+# model config, code version, and training cutoff produced each probability.
+_PREDICTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS predictions (
+    prediction_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    context          TEXT    NOT NULL DEFAULT 'live',  -- 'live' | 'backtest:wc2014' | ...
+    match_id         INTEGER,                          -- matches.parquet id (provenance only)
+    home_team        TEXT    NOT NULL,
+    away_team        TEXT    NOT NULL,
+    kickoff_ts       TEXT    NOT NULL,                 -- ISO-8601 (date-only fixtures: midnight)
+    neutral          INTEGER NOT NULL,
+    tournament       TEXT,
+    p_home           REAL    NOT NULL CHECK (p_home BETWEEN 0 AND 1),
+    p_draw           REAL    NOT NULL CHECK (p_draw BETWEEN 0 AND 1),
+    p_away           REAL    NOT NULL CHECK (p_away BETWEEN 0 AND 1),
+    model_id         TEXT    NOT NULL,
+    model_version    TEXT    NOT NULL,
+    code_version     TEXT,                             -- git sha at prediction time
+    hyperparams_hash TEXT    NOT NULL,
+    training_cutoff  TEXT    NOT NULL,                 -- model.trained_through (no-leak audit)
+    odds_snapshot_id INTEGER REFERENCES odds_snapshots(snapshot_id),
+    seed             INTEGER,                          -- only Monte-Carlo-derived predictions
+    predicted_at     TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pred_model   ON predictions(model_id);
+CREATE INDEX IF NOT EXISTS idx_pred_kickoff ON predictions(kickoff_ts);
+
+CREATE TABLE IF NOT EXISTS scores (
+    prediction_id INTEGER PRIMARY KEY REFERENCES predictions(prediction_id),
+    outcome       TEXT NOT NULL CHECK (outcome IN ('home', 'draw', 'away')),
+    log_loss      REAL NOT NULL,                       -- natural log
+    brier         REAL NOT NULL,                       -- multiclass, sum over 3 classes
+    rps           REAL NOT NULL,                       -- ranked probability score (primary)
+    scored_at     TEXT NOT NULL
+);
+"""
+
+
+def init_predictions(conn: sqlite3.Connection) -> None:
+    conn.executescript(_PREDICTIONS_SCHEMA)
+    conn.commit()
