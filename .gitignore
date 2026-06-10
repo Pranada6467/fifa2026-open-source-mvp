@@ -10,6 +10,7 @@ __pycache__/
 data/raw/
 data/processed/
 data/fifa2026.db*
+data/backtest.db*
 
 # Secrets
 .env

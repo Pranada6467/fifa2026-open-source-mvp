@@ -22,13 +22,30 @@ Done:
 - `asof.py` (T2) — point-in-time no-lookahead data access (CRITICAL invariant).
 - `loop/odds.py` (T7) — odds snapshotter; first snapshot already captured.
 - `config.py`, `db.py`, `registry.py`.
-- 8/8 tests passing.
+- `models/base.py` (T3) — split `predict_wdl`/`predict_goals` interface; WDL/ScoreGrid
+  validating containers; provenance hooks (`hyperparams_hash`, `trained_through`).
+- `models/elo.py` (T3) — BaselineElo (Davidson draw model, ν=0.6; neutral/decay/
+  importance knobs; incremental `update()` refuses out-of-order results).
+- `models/dixoncoles.py` (T4) — penaltyblog wrapper (4y trailing window anchored to
+  the frame's max date, xi time decay, ET rows weight-0 by default, thin-window
+  doubling fallback; ~6s fit on the real 4y window).
+- `db.py` predictions+scores tables, `loop/predict.py`, `loop/score.py` (T5) —
+  append-only provenance log (write-time lookahead guard: trained_through must
+  predate kickoff), clamped log-loss/Brier/RPS (cross-checked vs penaltyblog;
+  ours is natural-log, penaltyblog's ignorance is log2), calibration table,
+  `score_pending` (grades resolved rows once; flags integrity violations —
+  live rows predicted after kickoff are never scored; backtest rows exempt
+  from the wall-clock rule, their claim rests on training_cutoff).
+- `backtest.py` (T6) — match-level replay of WC 2014/18/22 through the same
+  predict/score path; per-day Elo updates + per-day DC refits; gates: beat
+  uniform ln(3), leak canary at log-loss < 0.60.
+  CLI: `.venv/bin/python -m fifapreds.backtest` (~10 min; `--elo-only` is fast).
+  First readout (2026-06-10, 384 preds, 0 violations): pooled log-loss
+  DC 0.973 < Elo 0.982 < uniform 1.099; DC wins 2014+2018, Elo wins 2022;
+  calibration max |freq−p| 0.055 (Elo) / 0.099 (DC) in populated bins.
+- 51/51 tests passing.
 
 Next, in order (see `docs/PLAN.md` → "Execution blocks"):
-- **T3** `models/base.py` (split `predict_wdl`/`predict_goals` interface) + `models/elo.py`.
-- **T4** `models/dixoncoles.py` (penaltyblog wrapper).
-- **T5** predictions log (full provenance) + `loop/score.py` (scorer + calibration).
-- **T6** match-level backtest on 2014/18/22 (the first real calibration readout).
 - **T8** `app/streamlit_app.py` + `publish/artifacts.py` (read-only viewer).
 - Then **Block 1** (simulator: `sim/groups.py`, `sim/routing.py`, `sim/montecarlo.py`)
   and **Block 2** (market-blend, technique leaderboard).
