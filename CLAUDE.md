@@ -13,9 +13,12 @@ leaderboard** ranking models by out-of-sample log-loss / Brier / RPS.
 Full context: `docs/PLAN.md` (the approved engineering plan — source of truth),
 `docs/DESIGN.md` (the why), `docs/block-v-findings.md` (verified facts).
 
-## Current status (2026-06-10)
+## Current status (2026-06-11)
 **Block V (verification spike): COMPLETE — all 6 items pass, V4 user-verified.**
 **Block 0 (calibration spine): COMPLETE (T1–T8).**
+**Block 1 (tournament simulator): COMPLETE (T9–T11).**
+**Block 2 (technique ladder): COMPLETE (T12–T14). The build is feature-complete;
+from here the project is OPERATING the loop, not building it.**
 
 Done:
 - `ingest.py` (T1) — `data/processed/matches.parquet` from martj42.
@@ -53,7 +56,40 @@ Done:
 - `app/streamlit_app.py` (T8) — read-only viewer over `artifacts/` only
   (override dir via env `FIFAPREDS_ARTIFACTS`; tested with streamlit AppTest).
   Run: `.venv/bin/python -m streamlit run app/streamlit_app.py`.
-- 60/60 tests passing.
+- `sim/groups.py` (T9) — FIFA 2026 group tiebreakers (pts/GD/GF, recursive
+  head-to-head, seeded drawing of lots; fair play skipped — no card data) +
+  cross-group third-place ranking. Pure-python hot-loop code, no pandas.
+- `sim/routing.py` (T10) — R32 slots from `bracket_2026.csv` + the verified
+  495-combination third-place table; runtime pool checks + the CRITICAL gate
+  test re-audits all 495 combos every run. `knockout_template()` for R16→final.
+- `sim/montecarlo.py` (T11) — seeded tournament MC over any GoalsModel:
+  conditions on played group results (2026 window only — historical WC
+  meetings between same-group teams must NOT leak in; regression-tested),
+  samples the rest from score grids, walks the bracket; draws → ET as
+  Poisson(grid marginals/3) → 50/50 pens; knockouts all neutral-venue
+  (documented approximation). 10k sims ≈ 4s after fit.
+- `models/market.py` (T12) — h2h snapshot parser (power-method de-vig per
+  bookmaker via `penaltyblog.implied`, median across books) + `MarketBlend`
+  (default 0.75 market / 0.25 base; per-fixture fallback to base off-coverage;
+  `trained_through` delegates to base — odds are pre-match info, audited via
+  `odds_snapshot_id` which `predict_upcoming` now auto-attaches).
+- `models/roster.py` (T13) — frozen leaderboard entrants as subclasses with
+  distinct model_ids: `EloDecay` (decay 0.1/y), `EloImportance` (martj42-exact
+  tournament weights — NB the Gold Cup string is plain "Gold Cup"),
+  `DixonColesSlowXi` (xi 0.0005, targets the extremes-overconfidence quirk).
+  `default_roster()` is THE source of entrants for the loop.
+- `orchestrate.py` (T14) — the one-command live loop:
+  `python -m fifapreds.orchestrate` = fetch martj42 (certifi SSL, atomic,
+  refuses shrinking files; `--no-fetch` to skip) → ingest → score → refit
+  roster + MarketBlend → predict (starts TOMORROW: date-only kickoffs make
+  same-day claims unscoreable) → 10k-sim MC per goals model
+  (`data/tournament_sim.parquet`, seed = UTC YYYYMMDD) → publish, incl.
+  `artifacts/tournament.parquet` + a viewer "Tournament odds" section.
+  ~25s end-to-end. E2E-tested (incl. tz-aware/naive scoring fix in score.py).
+- 107/107 tests passing.
+- First tournament odds published 2026-06-11 (DC, 10k sims): Spain 12.0%,
+  Argentina 11.8%, England 6.7%; slow-xi flips Argentina/Spain and raises
+  Colombia — the leaderboard adjudicates.
 
 Known model quirk (expected, monitored by the calibration loop): Dixon-Coles is
 overconfident at the extremes (backtest 0–0.1 bin: claimed 7.7%, happened 17.4%;
@@ -61,12 +97,14 @@ e.g. it gives Qatar 2.3% vs Switzerland where Elo says 10%) — cross-confederat
 opponent pools are thin and xi-decay sharpens recent form. T13 variants compete
 on exactly this.
 
-Next, in order (see `docs/PLAN.md` → "Execution blocks"):
-- **Block 1** (simulator: `sim/groups.py` T9, `sim/routing.py` T10, `sim/montecarlo.py` T11)
-- **Block 2** (T12 market-blend, T13 model variants, T14 orchestrator).
-- Live cadence until then: after each match day run `loop.predict` →
-  `publish.artifacts` → commit `artifacts/` (scoring lands with T14's orchestrator;
-  `loop/score.py` can be run ad hoc via `score_pending`).
+Live cadence (the whole loop is now one command):
+- After each match day (evening, once results are final):
+  `.venv/bin/python -m fifapreds.orchestrate` → commit `artifacts/`.
+  Run it the NIGHT BEFORE a match day, never the morning of — claims start
+  at tomorrow's fixtures by design.
+- Every day or two: `.venv/bin/python -m fifapreds.loop.odds` (quota-bound,
+  deliberately NOT part of the orchestrator).
+- Watch the violations line in the orchestrate output — it must stay empty.
 
 ## Setup & run
 ```bash
@@ -76,7 +114,8 @@ python3 -m venv .venv
 .venv/bin/python -m pip install pytest networkx # dev/data deps
 
 .venv/bin/python -m pytest -q                   # run tests
-.venv/bin/python -m fifapreds.ingest            # (re)build matches.parquet
+.venv/bin/python -m fifapreds.orchestrate       # THE live loop: fetch→score→fit→predict→sim→publish
+.venv/bin/python -m fifapreds.ingest            # (re)build matches.parquet only
 .venv/bin/python -m fifapreds.loop.odds         # capture an odds snapshot (uses quota)
 
 # Reproduce the verified data artifacts:

@@ -13,6 +13,9 @@ Outputs (all parquet unless noted):
 - leaderboard.parquet  mean log-loss/Brier/RPS per model x context
 - calibration.parquet  pooled reliability table per model (long format)
 - scored.parquet       graded predictions with outcomes (the results feed)
+- tournament.parquet   Monte Carlo trophy odds per (model_id, team), copied
+                       from data/tournament_sim.parquet when the orchestrator
+                       has produced one (T11/T14)
 - meta.json            generated_at, git sha, data-through date, row counts
 """
 from __future__ import annotations
@@ -33,6 +36,7 @@ from fifapreds.loop.score import CLASSES, calibration_table
 
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
 BACKTEST_DB = PROJECT_ROOT / "data" / "backtest.db"
+TOURNAMENT_SRC = PROJECT_ROOT / "data" / "tournament_sim.parquet"
 
 _PRED_COLS = ["prediction_id", "context", "match_id", "home_team", "away_team",
               "kickoff_ts", "neutral", "tournament", "p_home", "p_draw", "p_away",
@@ -74,6 +78,7 @@ def build(
     *,
     live_db: Path | str = DB_PATH,
     backtest_db: Path | str = BACKTEST_DB,
+    tournament_src: Path | str = TOURNAMENT_SRC,
     store: MatchStore | None = None,
 ) -> dict:
     """Export all artifacts; returns the meta dict that was written."""
@@ -119,6 +124,14 @@ def build(
     calibration = _concat(tables, ["model_id", "bin_lo", "bin_hi", "n", "p_mean", "freq"])
     calibration.to_parquet(out / "calibration.parquet", index=False)
 
+    # Tournament odds: pass through whatever the orchestrator last simulated.
+    if Path(tournament_src).exists():
+        tournament = pd.read_parquet(tournament_src)
+        tournament.to_parquet(out / "tournament.parquet", index=False)
+    else:
+        tournament = pd.DataFrame()
+        notes.append(f"missing source: {tournament_src}")
+
     meta = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "code_version": code_version(),
@@ -128,6 +141,7 @@ def build(
             "leaderboard": int(len(leaderboard)),
             "scored": int(len(scored)),
             "calibration": int(len(calibration)),
+            "tournament": int(len(tournament)),
         },
         "models": sorted(set(leaderboard["model_id"]) | set(upcoming["model_id"])),
         "notes": notes,

@@ -18,3 +18,4 @@ data/backtest.db*
 
 # OS
 .DS_Store
+data/tournament_sim.parquet

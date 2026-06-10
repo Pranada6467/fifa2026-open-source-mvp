@@ -1,0 +1,185 @@
+"""T14 — end-to-end orchestrator test.
+
+One synthetic world, the real pipeline: a pre-logged prediction gets scored,
+the injected roster is fitted and logs claims for all 72 fixtures, MarketBlend
+joins when an odds snapshot exists (and carries its snapshot id into the
+predictions log), the Monte Carlo writes tournament odds, and the publisher
+exports every artifact. No network, no real DBs.
+"""
+import json
+import sqlite3
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from fifapreds.db import init_odds, init_predictions
+from fifapreds.loop.predict import log_prediction
+from fifapreds.models.elo import BaselineElo
+from fifapreds.orchestrate import run
+from tests.test_sim_montecarlo import GROUPS, TEAMS, FakeGoals, hierarchy, synthetic_fixtures
+
+
+class Store:
+    """Minimal MatchStore stand-in over a synthetic frame."""
+
+    def __init__(self, matches: pd.DataFrame):
+        self.all = matches
+        self.played = (
+            matches[matches["is_played"]]
+            .sort_values("date", kind="stable")
+            .reset_index(drop=True)
+        )
+
+    def upcoming(self, start=None, end=None):
+        fx = self.all[~self.all["is_played"]]
+        if start is not None:
+            fx = fx[fx["date"] >= pd.Timestamp(start)]
+        if end is not None:
+            fx = fx[fx["date"] < pd.Timestamp(end)]
+        return fx.sort_values("date", kind="stable").reset_index(drop=True)
+
+
+def synthetic_world() -> pd.DataFrame:
+    """2025 friendlies (every team plays its group rivals once, decided by
+    strength) + the 72 unplayed 2026 group fixtures, dated in the future."""
+    rows = []
+    strengths = hierarchy()
+    date = pd.Timestamp("2025-03-01")
+    for _, sub in GROUPS.groupby("group"):
+        teams = list(sub["team"])
+        for i in range(4):
+            for j in range(i + 1, 4):
+                h, a = teams[i], teams[j]
+                hs, as_ = (2, 0) if strengths[h] > strengths[a] else (0, 2)
+                rows.append(
+                    {"date": date + pd.Timedelta(days=len(rows) % 60),
+                     "home_team": h, "away_team": a,
+                     "home_score": float(hs), "away_score": float(as_),
+                     "tournament": "Friendly", "neutral": True,
+                     "is_played": True, "went_to_et": False}
+                )
+    history = pd.DataFrame(rows)
+    now = pd.Timestamp.now().normalize()
+    fixtures = synthetic_fixtures()
+    fixtures["date"] = fixtures["date"] - fixtures["date"].min() + now + pd.Timedelta(days=1)
+    world = pd.concat([history, fixtures], ignore_index=True)
+    world["match_id"] = np.arange(len(world), dtype="int64")
+    return world
+
+
+def odds_payload(fixture: pd.Series) -> str:
+    """One The Odds API h2h event covering `fixture` at fair 3.0 odds."""
+    return json.dumps([{
+        "commence_time": fixture["date"].isoformat(),
+        "home_team": fixture["home_team"],
+        "away_team": fixture["away_team"],
+        "bookmakers": [{
+            "key": "bk", "title": "BK",
+            "markets": [{"key": "h2h", "outcomes": [
+                {"name": fixture["home_team"], "price": 3.0},
+                {"name": fixture["away_team"], "price": 3.0},
+                {"name": "Draw", "price": 3.0},
+            ]}],
+        }],
+    }])
+
+
+@pytest.fixture()
+def world(tmp_path):
+    matches = synthetic_world()
+    store = Store(matches)
+    conn = sqlite3.connect(tmp_path / "live.db")
+    conn.row_factory = sqlite3.Row
+    init_predictions(conn)
+    init_odds(conn)
+    return conn, store, tmp_path
+
+
+def test_full_pipeline(world):
+    conn, store, tmp_path = world
+
+    # A claim made long ago for an already-played friendly: the SCORE step
+    # must grade it on this run. The model only knows matches strictly before
+    # that fixture (every team has earlier appearances by construction).
+    old_fixture = store.played.sort_values("date").iloc[-1]
+    early = BaselineElo().fit(
+        store.played[store.played["date"] < old_fixture["date"]]
+    )
+    log_prediction(conn, early, old_fixture,
+                   predicted_at=pd.Timestamp(old_fixture["date"]) - pd.Timedelta(days=1))
+
+    # An odds snapshot covering the first upcoming fixture -> MarketBlend joins.
+    first_up = store.upcoming().iloc[0]
+    conn.execute(
+        "INSERT INTO odds_snapshots (captured_at, sport_key, market, raw_json)"
+        " VALUES (?, 'soccer_fifa_world_cup', 'h2h', ?)",
+        (pd.Timestamp.now().isoformat(), odds_payload(first_up)),
+    )
+    conn.commit()
+
+    roster = [BaselineElo(), FakeGoals(hierarchy(), decisiveness=0.7)]
+    report = run(
+        conn, store, roster,
+        n_sims=64, seed=7,
+        sim_path=tmp_path / "tournament_sim.parquet",
+        artifacts_dir=tmp_path / "artifacts",
+        live_db=tmp_path / "live.db",
+    )
+
+    # SCORE: the old claim graded, nothing pending, no integrity violations.
+    assert report["scored"] == 1
+    assert report["violations"] == []
+
+    # UPDATE: full roster + market blend entered.
+    assert report["models"] == ["elo_baseline", "fake_goals", "market_blend"]
+
+    # PREDICT: every model claimed all 72 upcoming fixtures.
+    assert report["predicted"] == {
+        "elo_baseline": 72, "fake_goals": 72, "market_blend": 72,
+    }
+    # The market entrant's rows carry the snapshot id; others stay NULL.
+    snap_ids = dict(conn.execute(
+        """SELECT model_id, COUNT(odds_snapshot_id) FROM predictions
+           WHERE context='live' GROUP BY model_id"""
+    ).fetchall())
+    assert snap_ids["market_blend"] == 72 and snap_ids["fake_goals"] == 0
+
+    # SIMULATE: only the goals model simulates; probabilities conserved.
+    assert report["simulated"] == {"fake_goals": 64}
+    tournament = pd.read_parquet(tmp_path / "artifacts" / "tournament.parquet")
+    assert tournament["p_champion"].sum() == pytest.approx(1.0)
+    assert set(tournament["team"]) == set(TEAMS)
+    assert report["sim_metas"][0]["seed"] == 7
+
+    # PUBLISH: all artifacts exist and meta agrees.
+    meta = json.loads((tmp_path / "artifacts" / "meta.json").read_text())
+    assert meta["counts"]["tournament"] == 48
+    assert meta["counts"]["upcoming"] == 216
+    for name in ("upcoming.parquet", "leaderboard.parquet", "scored.parquet",
+                 "calibration.parquet", "tournament.parquet"):
+        assert (tmp_path / "artifacts" / name).exists(), name
+
+    # Idempotence: an immediate rerun adds no new claims.
+    again = run(
+        conn, store, [BaselineElo(), FakeGoals(hierarchy(), decisiveness=0.7)],
+        n_sims=16, seed=7,
+        sim_path=tmp_path / "tournament_sim.parquet",
+        artifacts_dir=tmp_path / "artifacts",
+        live_db=tmp_path / "live.db",
+    )
+    assert all(n == 0 for n in again["predicted"].values())
+
+
+def test_runs_without_odds_snapshot(world):
+    conn, store, tmp_path = world
+    report = run(
+        conn, store, [FakeGoals(hierarchy())],
+        n_sims=16, seed=1,
+        sim_path=tmp_path / "tournament_sim.parquet",
+        artifacts_dir=tmp_path / "artifacts",
+        live_db=tmp_path / "live.db",
+    )
+    assert report["models"] == ["fake_goals"]
+    assert any("market_blend: skipped" in n for n in report["notes"])
+    assert report["predicted"] == {"fake_goals": 72}

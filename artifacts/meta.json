@@ -1,16 +1,21 @@
 {
-  "generated_at": "2026-06-10T15:19:51.117199+00:00",
-  "code_version": "8fbd6cb",
+  "generated_at": "2026-06-10T23:18:13.816193+00:00",
+  "code_version": "3f0d179",
   "data_through": "2026-06-09",
   "counts": {
-    "upcoming": 48,
+    "upcoming": 424,
     "leaderboard": 6,
     "scored": 384,
-    "calibration": 20
+    "calibration": 20,
+    "tournament": 96
   },
   "models": [
     "dixon_coles",
-    "elo_baseline"
+    "dixon_coles_slow_xi",
+    "elo_baseline",
+    "elo_decay",
+    "elo_importance",
+    "market_blend"
   ],
   "notes": []
 }

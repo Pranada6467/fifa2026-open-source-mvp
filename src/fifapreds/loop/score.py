@@ -35,6 +35,14 @@ EPS = 1e-9
 CLASSES = ("home", "draw", "away")
 
 
+def _naive_utc(ts) -> pd.Timestamp:
+    """Timestamps in the log mix conventions: predicted_at is tz-aware UTC,
+    kickoff_ts/training_cutoff are naive (martj42 dates). Compare on a single
+    footing: UTC with the tzinfo dropped."""
+    ts = pd.Timestamp(ts)
+    return ts.tz_convert("UTC").tz_localize(None) if ts.tzinfo is not None else ts
+
+
 def outcome_index(home_score: float, away_score: float) -> int:
     """0=home, 1=draw, 2=away (the order penaltyblog metrics expect)."""
     if home_score > away_score:
@@ -122,11 +130,11 @@ def score_pending(conn: sqlite3.Connection, store: MatchStore) -> dict:
     scored_rows, violations, pending = [], [], 0
     now = datetime.now(timezone.utc).isoformat()
     for row in todo.itertuples(index=False):
-        kickoff = pd.Timestamp(row.kickoff_ts)
-        if pd.Timestamp(row.training_cutoff) >= kickoff:
+        kickoff = _naive_utc(row.kickoff_ts)
+        if _naive_utc(row.training_cutoff) >= kickoff:
             violations.append(int(row.prediction_id))      # leaked training data
             continue
-        if row.context == "live" and pd.Timestamp(row.predicted_at) >= kickoff:
+        if row.context == "live" and _naive_utc(row.predicted_at) >= kickoff:
             violations.append(int(row.prediction_id))      # predicted after kickoff
             continue
         outcome = results.get((kickoff.normalize(), row.home_team, row.away_team))

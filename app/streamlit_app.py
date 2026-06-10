@@ -52,6 +52,41 @@ else:
 prob_col = lambda label: st.column_config.ProgressColumn(  # noqa: E731
     label, min_value=0.0, max_value=1.0, format="%.3f")
 
+# ----------------------------------------------------------- tournament
+st.header("Tournament odds")
+tournament = load("tournament.parquet")
+if tournament is None:
+    st.info("No simulation yet — run `python -m fifapreds.orchestrate`.")
+else:
+    sim_models = sorted(tournament["model_id"].unique())
+    pick = (
+        st.selectbox("Simulating model", sim_models)
+        if len(sim_models) > 1 else sim_models[0]
+    )
+    view = (
+        tournament[tournament["model_id"] == pick]
+        .sort_values("p_champion", ascending=False)
+        .head(16)[["team", "group", "p_advance", "p_qf", "p_sf",
+                   "p_final", "p_champion"]]
+    )
+    st.dataframe(
+        view,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "team": st.column_config.TextColumn("Team"),
+            "group": st.column_config.TextColumn("Group"),
+            "p_advance": prob_col("P(advance)"),
+            "p_qf": prob_col("P(quarter-final)"),
+            "p_sf": prob_col("P(semi-final)"),
+            "p_final": prob_col("P(final)"),
+            "p_champion": prob_col("P(champion)"),
+        },
+    )
+    st.caption("Seeded Monte Carlo over the full bracket (group tiebreakers, "
+               "verified third-place routing, ET/penalty approximation), "
+               "conditioned on group results so far. Top 16 shown.")
+
 # ------------------------------------------------------------- upcoming
 st.header("Upcoming matches")
 upcoming = load("upcoming.parquet")

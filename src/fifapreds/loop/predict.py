@@ -136,7 +136,11 @@ def predict_upcoming(
     Returns {model_id: rows_logged}; duplicates of an identical claim are skipped.
     """
     init_predictions(conn)
-    start = pd.Timestamp.now().normalize()
+    # Kickoffs are date-only (midnight), so a claim logged *on* match day can
+    # never prove it preceded kickoff — the scorer would flag it forever.
+    # Claims therefore start tomorrow; predict the night before, not the
+    # morning of.
+    start = pd.Timestamp.now().normalize() + pd.Timedelta(days=1)
     end = None if days is None else start + pd.Timedelta(days=days)
     fixtures = store.upcoming(start=start, end=end)
     fixtures = fixtures[fixtures["tournament"] == tournament]
@@ -146,7 +150,10 @@ def predict_upcoming(
         for _, fixture in fixtures.iterrows():
             if _already_claimed(conn, model, int(fixture["match_id"])):
                 continue
-            log_prediction(conn, model, fixture, context="live")
+            # Odds-derived entrants carry their snapshot id (provenance for
+            # exactly which market state informed the claim).
+            log_prediction(conn, model, fixture, context="live",
+                           odds_snapshot_id=getattr(model, "snapshot_id", None))
             n += 1
         logged[model.model_id] = n
     return logged

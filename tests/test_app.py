@@ -34,6 +34,6 @@ def test_app_renders_artifacts(tmp_path, monkeypatch):
 
 def test_app_empty_states_instead_of_crash(tmp_path, monkeypatch):
     at = _run(tmp_path / "empty", monkeypatch)
-    # Every section (meta + 4 data sections) shows the rebuild hint.
-    assert len(at.info) == 5
+    # Every section (meta + tournament + 4 data sections) shows its hint.
+    assert len(at.info) == 6
     assert len(at.dataframe) == 0
