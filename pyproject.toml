@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fifapreds"
+version = "0.0.1"
+description = "FIFA 2026 live calibration engine: team ratings, scoreline models, tournament Monte Carlo, and an honest-calibration scoreboard."
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "pyarrow>=14.0",
+    "requests>=2.31",
+    # Pinned after Block V (V1): 1.11.0 verified to expose DixonColesGoalModel
+    # (native neutral_venue + time-decay weights), implied de-vig, rps/ignorance
+    # /brier metrics, and ratings.Elo/PiRatingSystem.
+    "penaltyblog==1.11.0",
+    "streamlit>=1.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fifapreds"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

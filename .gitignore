@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Data: raw inputs and the local DB are reproducible / large — not committed.
+# Precomputed publish artifacts ARE committed (the Streamlit app reads them).
+data/raw/
+data/processed/
+data/fifa2026.db*
+
+# Secrets
+.env
+*.key
+
+# OS
+.DS_Store
