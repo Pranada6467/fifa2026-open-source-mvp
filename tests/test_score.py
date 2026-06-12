@@ -79,3 +79,58 @@ def test_calibration_table_flags_overconfidence():
     hot_bin = table.iloc[9]  # the 0.9-1.0 bin
     assert hot_bin["p_mean"] == pytest.approx(0.9)
     assert hot_bin["freq"] == pytest.approx(0.5)
+
+
+# ----------------------------------------------------------------- T3 binary
+def test_binary_calibration_matches_wilson_reference():
+    """Golden check: bin frequencies and Wilson bands against statsmodels
+    called directly — the table must never drift from the reference."""
+    import numpy as np
+    from statsmodels.stats.proportion import proportion_confint
+
+    from fifapreds.loop.score import binary_calibration_table
+
+    rng = np.random.default_rng(7)
+    p = rng.uniform(0, 1, 400)
+    y = (rng.uniform(0, 1, 400) < p).astype(float)   # calibrated by design
+    table = binary_calibration_table(p, y, n_bins=10)
+
+    assert len(table) == 10 and table["n"].sum() == 400
+    b = table.iloc[7]                                # the [0.7, 0.8) bin
+    mask = (p >= 0.7) & (p < 0.8)
+    lo, hi = proportion_confint(int(y[mask].sum()), int(mask.sum()),
+                                method="wilson")
+    assert b["freq"] == pytest.approx(y[mask].mean())
+    assert (b["ci_lo"], b["ci_hi"]) == (pytest.approx(lo), pytest.approx(hi))
+    assert b["ci_lo"] <= b["freq"] <= b["ci_hi"]
+    # Calibrated forecasts: the claimed probability sits inside the band.
+    populated = table.dropna(subset=["p_mean"])
+    inside = ((populated["p_mean"] >= populated["ci_lo"])
+              & (populated["p_mean"] <= populated["ci_hi"]))
+    assert inside.mean() >= 0.8
+
+
+def test_binary_calibration_empty_bins_are_nan():
+    from fifapreds.loop.score import binary_calibration_table
+
+    table = binary_calibration_table([0.05, 0.06], [1.0, 0.0], n_bins=10)
+    assert table.iloc[0]["n"] == 2
+    assert table.iloc[5:]["n"].sum() == 0
+    assert table.iloc[5:][["p_mean", "freq", "ci_lo", "ci_hi"]].isna().all().all()
+
+
+def test_wdl_calibration_delegates_to_binary():
+    """The 3-class table is exactly the binary table over flattened
+    one-vs-rest claims — one implementation, not two (T3/DRY)."""
+    import numpy as np
+    import pandas as pd
+
+    from fifapreds.loop.score import binary_calibration_table, calibration_table
+
+    probs = np.array([[0.5, 0.3, 0.2], [0.1, 0.2, 0.7], [0.4, 0.4, 0.2]])
+    outcomes = [0, 2, 1]
+    y = np.zeros_like(probs)
+    y[np.arange(3), outcomes] = 1.0
+    via_wdl = calibration_table(probs, outcomes)
+    via_binary = binary_calibration_table(probs.ravel(), y.ravel())
+    pd.testing.assert_frame_equal(via_wdl, via_binary)

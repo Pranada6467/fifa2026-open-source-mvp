@@ -19,6 +19,8 @@ dependencies = [
     # /brier metrics, and ratings.Elo/PiRatingSystem.
     "penaltyblog==1.11.0",
     "streamlit>=1.30",
+    # T3: Wilson intervals on reliability bins (eng review: don't hand-roll)
+    "statsmodels>=0.14",
 ]
 
 [project.optional-dependencies]

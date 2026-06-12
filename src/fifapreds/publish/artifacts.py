@@ -261,7 +261,8 @@ def build(
             table.insert(1, "track", track)
             tables.append(table)
     calibration = _concat(
-        tables, ["model_id", "track", "bin_lo", "bin_hi", "n", "p_mean", "freq"])
+        tables, ["model_id", "track", "bin_lo", "bin_hi", "n", "p_mean", "freq",
+                 "ci_lo", "ci_hi"])
     calibration.to_parquet(out / "calibration.parquet", index=False)
 
     # E2 narrative panels: surprises (graded live matches) + market disagreement.

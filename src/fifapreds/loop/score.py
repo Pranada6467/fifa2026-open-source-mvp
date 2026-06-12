@@ -79,27 +79,52 @@ def rps(probs, outcomes) -> np.ndarray:
     return (cum_diff[:, :-1] ** 2).sum(axis=1) / (p.shape[1] - 1)
 
 
-def calibration_table(probs, outcomes, n_bins: int = 10) -> pd.DataFrame:
-    """Pooled one-vs-rest reliability table: among all claims of probability
-    ~p, how often did the claimed thing happen? Honest calibration shows
-    freq ≈ p_mean per bin (the diagonal)."""
-    p = _as_probs(probs)
-    y = np.zeros_like(p)
-    y[np.arange(len(p)), np.asarray(outcomes, dtype=int)] = 1.0
-    flat_p, flat_y = p.ravel(), y.ravel()
+def binary_calibration_table(probs, happened, n_bins: int = 10,
+                             alpha: float = 0.05) -> pd.DataFrame:
+    """Reliability table for ANY binary event (T3 — one implementation shared
+    by W/D/L one-vs-rest, group qualification (E4), and O/U-2.5/BTTS (E6)).
+
+    Among all claims of probability ~p, how often did the claimed thing
+    happen? Honest calibration shows freq ≈ p_mean per bin (the diagonal).
+    `ci_lo`/`ci_hi` are Wilson score intervals on freq (statsmodels, not
+    hand-rolled) so thin bins visibly carry their uncertainty.
+    """
+    from statsmodels.stats.proportion import proportion_confint
+
+    flat_p = np.asarray(probs, dtype=float).ravel()
+    flat_y = np.asarray(happened, dtype=float).ravel()
+    if flat_p.shape != flat_y.shape:
+        raise ValueError(f"shape mismatch: {flat_p.shape} vs {flat_y.shape}")
     # right-closed bins; p=0 lands in the first bin
     idx = np.minimum((flat_p * n_bins).astype(int), n_bins - 1)
     rows = []
     for b in range(n_bins):
         mask = idx == b
+        n = int(mask.sum())
+        if n:
+            successes = int(flat_y[mask].sum())
+            ci_lo, ci_hi = proportion_confint(successes, n, alpha=alpha,
+                                              method="wilson")
         rows.append({
             "bin_lo": b / n_bins,
             "bin_hi": (b + 1) / n_bins,
-            "n": int(mask.sum()),
-            "p_mean": float(flat_p[mask].mean()) if mask.any() else np.nan,
-            "freq": float(flat_y[mask].mean()) if mask.any() else np.nan,
+            "n": n,
+            "p_mean": float(flat_p[mask].mean()) if n else np.nan,
+            "freq": float(flat_y[mask].mean()) if n else np.nan,
+            "ci_lo": float(ci_lo) if n else np.nan,
+            "ci_hi": float(ci_hi) if n else np.nan,
         })
     return pd.DataFrame(rows)
+
+
+def calibration_table(probs, outcomes, n_bins: int = 10) -> pd.DataFrame:
+    """Pooled one-vs-rest reliability table over (n, 3) W/D/L claims — each
+    class probability becomes one binary claim, binned by the shared
+    `binary_calibration_table`."""
+    p = _as_probs(probs)
+    y = np.zeros_like(p)
+    y[np.arange(len(p)), np.asarray(outcomes, dtype=int)] = 1.0
+    return binary_calibration_table(p.ravel(), y.ravel(), n_bins=n_bins)
 
 
 def score_pending(conn: sqlite3.Connection, store: MatchStore) -> dict:
