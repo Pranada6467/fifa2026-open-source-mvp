@@ -19,6 +19,10 @@ Full context: `docs/PLAN.md` (the approved engineering plan — source of truth)
 **Block 1 (tournament simulator): COMPLETE (T9–T11).**
 **Block 2 (technique ladder): COMPLETE (T12–T14). The build is feature-complete;
 from here the project is OPERATING the loop, not building it.**
+**Phase 2 Wave 1 — E1 automated nightly loop: DONE 2026-06-12** (scheduled
+Action commits DB+artifacts; violations gate exits 2 and turns the build red)
+**+ T2 fit-failure resilience** (`_fit_roster` drops an entrant on
+RuntimeError/ValueError/LinAlgError/PyMC SamplingError instead of crashing).
 
 Done:
 - `ingest.py` (T1) — `data/processed/matches.parquet` from martj42.
@@ -97,14 +101,18 @@ e.g. it gives Qatar 2.3% vs Switzerland where Elo says 10%) — cross-confederat
 opponent pools are thin and xi-decay sharpens recent form. T13 variants compete
 on exactly this.
 
-Live cadence (the whole loop is now one command):
-- After each match day (evening, once results are final):
-  `.venv/bin/python -m fifapreds.orchestrate` → commit `artifacts/`.
-  Run it the NIGHT BEFORE a match day, never the morning of — claims start
-  at tomorrow's fixtures by design.
-- Every day or two: `.venv/bin/python -m fifapreds.loop.odds` (quota-bound,
-  deliberately NOT part of the orchestrator).
-- Watch the violations line in the orchestrate output — it must stay empty.
+Live cadence (E1: the loop now runs ITSELF — Phase 2 Wave 1 started 2026-06-12):
+- `.github/workflows/nightly.yml` runs orchestrate at 06:30 UTC daily and
+  commits the updated `data/fifa2026.db` + `artifacts/` back to the repo.
+  **CI is the SOLE writer of the live DB — do NOT run orchestrate locally**
+  (it forks the committed DB → binary merge conflict). Local experiments:
+  `--db /tmp/scratch.db --no-fetch`. Force a real run via `workflow_dispatch`.
+- The Action fails (orchestrate exits 2, nothing committed) when the scorer
+  reports violations — a red nightly build means stop and investigate.
+- Every day or two, still manual: `git pull` →
+  `.venv/bin/python -m fifapreds.loop.odds` → commit + push the DB right away
+  (quota-bound, deliberately NOT part of the orchestrator; it writes the DB,
+  so don't let it straddle the nightly window).
 
 ## Setup & run
 ```bash
@@ -114,7 +122,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install pytest networkx # dev/data deps
 
 .venv/bin/python -m pytest -q                   # run tests
-.venv/bin/python -m fifapreds.orchestrate       # THE live loop: fetch→score→fit→predict→sim→publish
+.venv/bin/python -m fifapreds.orchestrate       # THE live loop — CI-only now! locally use --db /tmp/scratch.db
 .venv/bin/python -m fifapreds.ingest            # (re)build matches.parquet only
 .venv/bin/python -m fifapreds.loop.odds         # capture an odds snapshot (uses quota)
 
@@ -125,7 +133,10 @@ python3 -m venv .venv
 
 ## Locked architecture decisions (do not relitigate — see PLAN.md)
 - **Storage:** SQLite (`data/fifa2026.db`: predictions, odds_snapshots, rating
-  snapshots) + parquet (raw/processed match data). Both gitignored.
+  snapshots) + parquet (raw/processed match data). The live DB is COMMITTED
+  (E1: survives stateless CI runs; CI is its sole writer); `backtest.db`, raw
+  CSVs and processed parquet stay gitignored, except the three frozen 2026
+  inputs (`groups_2026.csv`, `bracket_2026.csv`, `routing_r32.parquet`).
 - **No lookahead:** all match-history reads go through `asof.MatchStore.before(ts)`,
   which returns only *played* matches strictly before `ts`. Backtest and live loop
   share this path. This is the single most important invariant — never bypass it.

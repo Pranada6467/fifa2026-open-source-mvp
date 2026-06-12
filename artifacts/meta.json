@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-06-10T23:18:13.816193+00:00",
-  "code_version": "3f0d179",
-  "data_through": "2026-06-09",
+  "generated_at": "2026-06-11T12:41:50.343956+00:00",
+  "code_version": "54dcedb",
+  "data_through": "2026-06-10",
   "counts": {
-    "upcoming": 424,
+    "upcoming": 432,
     "leaderboard": 6,
     "scored": 384,
     "calibration": 20,

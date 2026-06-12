@@ -32,6 +32,26 @@ GitHub and point [Streamlit Community Cloud](https://share.streamlit.io) at
 `app/streamlit_app.py`; it redeploys whenever fresh artifacts are committed.
 Backtest gate: `.venv/bin/python -m fifapreds.backtest` (WC 2014/18/22 replay).
 
+## Automated nightly loop
+A scheduled GitHub Action (`.github/workflows/nightly.yml`, 06:30 UTC) runs
+`python -m fifapreds.orchestrate` and commits the updated `data/fifa2026.db`
+plus `artifacts/` back to the repo.
+
+**CI is the sole writer of `data/fifa2026.db`.** The DB is committed so the
+append-only predictions log survives stateless CI runs — which means running
+`orchestrate` locally on the same branch forks the DB and produces binary merge
+conflicts. Rules:
+- Don't run `python -m fifapreds.orchestrate` locally anymore; force a run via
+  the Action's `workflow_dispatch` instead. For local experiments point it at a
+  scratch DB: `--db /tmp/scratch.db --no-fetch`.
+- The odds snapshotter (`python -m fifapreds.loop.odds`) stays manual (API
+  quota) and also writes the DB: `git pull` first, run it, commit + push the DB
+  immediately, and stay clear of the nightly window (~06:30 UTC).
+- The Action **fails loudly** (exit 2, nothing committed) when the scorer
+  reports integrity violations — a red nightly build means stop and
+  investigate; the `violations:` line in the job log lists the offending
+  prediction ids.
+
 ## Where things are
 - `src/fifapreds/` — the package (ingest, as-of layer, models, sim, loop, publish).
 - `scripts/` — reproducible data builders (bracket/routing, groups).

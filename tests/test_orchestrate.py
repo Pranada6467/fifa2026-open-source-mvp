@@ -5,9 +5,15 @@ the injected roster is fitted and logs claims for all 72 fixtures, MarketBlend
 joins when an odds snapshot exists (and carries its snapshot id into the
 predictions log), the Monte Carlo writes tournament odds, and the publisher
 exports every artifact. No network, no real DBs.
+
+Plus the unattended-operation guarantees (E1/T2): a failing fit drops that
+entrant instead of crashing the loop, and integrity violations turn into a
+non-zero exit code so the nightly Action goes red.
 """
 import json
 import sqlite3
+import sys
+import types
 
 import numpy as np
 import pandas as pd
@@ -16,7 +22,7 @@ import pytest
 from fifapreds.db import init_odds, init_predictions
 from fifapreds.loop.predict import log_prediction
 from fifapreds.models.elo import BaselineElo
-from fifapreds.orchestrate import run
+from fifapreds.orchestrate import _fit_failure_exceptions, _fit_roster, exit_code, run
 from tests.test_sim_montecarlo import GROUPS, TEAMS, FakeGoals, hierarchy, synthetic_fixtures
 
 
@@ -169,6 +175,69 @@ def test_full_pipeline(world):
         live_db=tmp_path / "live.db",
     )
     assert all(n == 0 for n in again["predicted"].values())
+
+
+class FakeSamplingError(RuntimeError):
+    """Stands in for pymc.exceptions.SamplingError (a RuntimeError subclass)."""
+
+
+class ExplodingModel:
+    """Roster entrant whose fit always fails — the loop must drop it, not die."""
+
+    model_id = "exploding"
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    def fit(self, matches):
+        raise self._exc
+
+
+def test_fit_roster_drops_failing_entrants(world):
+    _, store, _ = world
+    roster = [
+        BaselineElo(),
+        ExplodingModel(FakeSamplingError("chain failed to converge")),
+        ExplodingModel(np.linalg.LinAlgError("singular matrix")),
+    ]
+    fitted, notes = _fit_roster(roster, store.played)
+    assert [m.model_id for m in fitted] == ["elo_baseline"]
+    assert len(notes) == 2
+    assert all("exploding: fit failed, dropped" in n for n in notes)
+
+
+def test_fit_failures_pick_up_pymc_when_installed(monkeypatch):
+    class BoomError(Exception):  # NOT a RuntimeError — only reachable via pymc
+        pass
+
+    exceptions_mod = types.ModuleType("pymc.exceptions")
+    exceptions_mod.SamplingError = BoomError
+    pymc_mod = types.ModuleType("pymc")
+    pymc_mod.exceptions = exceptions_mod
+    monkeypatch.setitem(sys.modules, "pymc", pymc_mod)
+    monkeypatch.setitem(sys.modules, "pymc.exceptions", exceptions_mod)
+    assert BoomError in _fit_failure_exceptions()
+
+
+def test_loop_survives_sampler_failure(world):
+    conn, store, tmp_path = world
+    report = run(
+        conn, store,
+        [ExplodingModel(FakeSamplingError("divergences")), FakeGoals(hierarchy())],
+        n_sims=16, seed=3,
+        sim_path=tmp_path / "tournament_sim.parquet",
+        artifacts_dir=tmp_path / "artifacts",
+        live_db=tmp_path / "live.db",
+    )
+    assert report["models"] == ["fake_goals"]
+    assert any("exploding: fit failed, dropped" in n for n in report["notes"])
+    assert report["predicted"] == {"fake_goals": 72}
+    assert exit_code(report) == 0
+
+
+def test_exit_code_gates_on_violations():
+    assert exit_code({"violations": []}) == 0
+    assert exit_code({"violations": [7, 9]}) == 2
 
 
 def test_runs_without_odds_snapshot(world):

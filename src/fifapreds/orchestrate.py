@@ -35,6 +35,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from fifapreds.config import PROJECT_ROOT
@@ -85,12 +86,32 @@ def fetch_raw(raw_dir: Path | None = None) -> list[str]:
     return notes
 
 
+def _fit_failure_exceptions() -> tuple[type[Exception], ...]:
+    """Exception types that drop an entrant instead of killing the loop.
+
+    The loop runs unattended (nightly Action): one bad fit must cost one
+    entrant for one night, never the whole run. PyMC (optional dep, E3) is
+    listed explicitly — its SamplingError currently derives from RuntimeError,
+    but the catch is the contract, not that accident. Resolved at call time so
+    installing the optional dep widens the net without a code change.
+    """
+    excs: list[type[Exception]] = [RuntimeError, ValueError, np.linalg.LinAlgError]
+    try:
+        from pymc.exceptions import SamplingError
+
+        excs.append(SamplingError)
+    except ImportError:
+        pass
+    return tuple(excs)
+
+
 def _fit_roster(roster: list[Model], played: pd.DataFrame) -> tuple[list[Model], list[str]]:
     fitted, notes = [], []
+    failures = _fit_failure_exceptions()
     for model in roster:
         try:
             fitted.append(model.fit(played))
-        except (RuntimeError, ValueError) as exc:
+        except failures as exc:
             notes.append(f"{model.model_id}: fit failed, dropped ({exc})")
     return fitted, notes
 
@@ -201,6 +222,13 @@ def run(
     return report
 
 
+def exit_code(report: dict) -> int:
+    """0 = clean run; 2 = integrity violations. The nightly Action gates on
+    this — a non-empty violations list must turn the build red, never pass
+    silently."""
+    return 2 if report["violations"] else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -231,8 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     report = run(conn, store, days=args.days, n_sims=args.n_sims, seed=args.seed,
                  live_db=args.db if args.db else None)
 
-    print(f"score: {report['scored']} graded, {report['score_pending']} awaiting results"
-          + (f", VIOLATIONS: {report['violations']}" if report["violations"] else ""))
+    print(f"score: {report['scored']} graded, {report['score_pending']} awaiting results")
     for note in report["notes"]:
         print(f"update: {note}")
     for model_id, n in report["predicted"].items():
@@ -241,7 +268,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"simulate: {model_id}: {n} tournaments")
     counts = report["artifacts"]["counts"]
     print("publish: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
-    return 0
+    # Close before exit so the WAL checkpoints — CI commits the .db file and
+    # must never snapshot it with writes still sitting in the sidecar.
+    conn.close()
+    violations = report["violations"]
+    print(f"violations: {len(violations)}"
+          + (f" — prediction_ids {violations}" if violations else ""))
+    return exit_code(report)
 
 
 if __name__ == "__main__":
