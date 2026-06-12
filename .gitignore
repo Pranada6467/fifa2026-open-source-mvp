@@ -7,17 +7,19 @@ __pycache__/
 
 # Data: raw inputs and the backtest DB are reproducible / large — not committed.
 # Precomputed publish artifacts ARE committed (the Streamlit app reads them).
-# E1 exceptions, committed so the nightly Action runs stateless: the live DB
-# (append-only predictions log; CI is its SOLE writer) and the three small
-# verified 2026 static inputs (groups / bracket / R32 routing — frozen facts,
-# rebuilding them nightly from the web would be pointless flake).
+# E1/E2 exceptions, committed so the nightly Action runs stateless: the live
+# DB (append-only predictions log; CI is its SOLE writer), the backtest DB
+# (the proof track — without it the nightly publish drops the n=384 record
+# from the public board), and the three small verified 2026 static inputs
+# (groups / bracket / R32 routing — frozen facts, rebuilding them nightly
+# from the web would be pointless flake).
 data/raw/*
 !data/raw/groups_2026.csv
 !data/raw/bracket_2026.csv
 !data/raw/routing_r32.parquet
 data/processed/
 data/fifa2026.db-*
-data/backtest.db*
+data/backtest.db-*
 
 # Secrets
 .env

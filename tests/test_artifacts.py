@@ -71,7 +71,8 @@ def built(tmp_path_factory) -> tuple[Path, dict]:
 def test_all_artifact_files_written(built):
     out, _ = built
     for name in ("upcoming.parquet", "leaderboard.parquet", "calibration.parquet",
-                 "scored.parquet", "meta.json"):
+                 "scored.parquet", "surprises.parquet", "disagreement.parquet",
+                 "meta.json"):
         assert (out / name).exists()
 
 
@@ -99,12 +100,34 @@ def test_calibration_pools_every_claim(built):
     # 1 graded prediction x 3 classes = 3 pooled claims across the bins.
     assert calibration["n"].sum() == 3
     assert set(calibration["model_id"]) == {"elo_baseline"}
+    # E2: the board's two-track split happens at export time.
+    assert set(calibration["track"]) == {"live"}
+
+
+def test_upcoming_consensus_columns(built):
+    out, _ = built
+    upcoming = pd.read_parquet(out / "upcoming.parquet")
+    row = upcoming.iloc[0]
+    # Single model, no market blend: consensus == the model, labelled as such.
+    assert row["consensus_source"] == "model_avg"
+    assert row["cons_p_home"] == pytest.approx(row["p_home"])
+
+
+def test_surprises_one_row_per_match(built):
+    out, _ = built
+    surprises = pd.read_parquet(out / "surprises.parquet")
+    assert len(surprises) == 1
+    row = surprises.iloc[0]
+    assert row["outcome"] == "home" and row["n_models"] == 1
+    assert row["worst_model_id"] == "elo_baseline"
+    assert 0.0 < row["consensus_p"] < 1.0
 
 
 def test_meta_counts_and_degradation_note(built):
     out, meta = built
     assert meta["counts"] == {"upcoming": 1, "leaderboard": 1, "scored": 1,
-                              "calibration": 10, "tournament": 0}
+                              "calibration": 10, "surprises": 1,
+                              "disagreement": 0, "tournament": 0}
     assert meta["models"] == ["elo_baseline"]
     assert any("missing-backtest.db" in note for note in meta["notes"])
     assert meta["data_through"] == "2022-01-01"
@@ -117,6 +140,94 @@ def test_build_with_no_sources_is_empty_but_valid(tmp_path):
                            backtest_db=tmp_path / "no2.db",
                            tournament_src=tmp_path / "no3.parquet", store=store)
     assert meta["counts"] == {"upcoming": 0, "leaderboard": 0, "scored": 0,
-                              "calibration": 0, "tournament": 0}
+                              "calibration": 0, "surprises": 0,
+                              "disagreement": 0, "tournament": 0}
     assert len(meta["notes"]) == 3  # two dbs + the tournament sim source
     assert pd.read_parquet(tmp_path / "art" / "upcoming.parquet").empty
+
+
+def _h2h_payload(home: str, away: str, prices=(3.0, 3.0, 3.0)) -> str:
+    """One The Odds API h2h event at the given decimal prices (h, a, d)."""
+    return json.dumps([{
+        "commence_time": "2022-06-01T00:00:00Z",
+        "home_team": home, "away_team": away,
+        "bookmakers": [{
+            "key": "bk", "title": "BK",
+            "markets": [{"key": "h2h", "outcomes": [
+                {"name": home, "price": prices[0]},
+                {"name": away, "price": prices[1]},
+                {"name": "Draw", "price": prices[2]},
+            ]}],
+        }],
+    }])
+
+
+def test_surprises_dedupe_two_models_and_worst_named(tmp_path):
+    """Two models grade the same match -> ONE surprise row (D8), consensus is
+    the model average, and the most-wrong model is named."""
+    from fifapreds.models.roster import EloDecay
+
+    store = _store(_HISTORY + [_FIX_PLAYED])
+    train = store.before("2022-01-01")
+    base, decay = BaselineElo().fit(train), EloDecay().fit(train)
+    live_db = tmp_path / "live.db"
+    conn = sqlite3.connect(live_db)
+    fix = store.upcoming().iloc[0]
+    log_prediction(conn, base, fix, predicted_at="2021-12-31T12:00:00")
+    log_prediction(conn, decay, fix, predicted_at="2021-12-31T12:00:00")
+    resolved = _store(_HISTORY + [_RESULT])
+    assert score_pending(conn, resolved)["scored"] == 2
+    conn.close()
+
+    artifacts.build(tmp_path / "art", live_db=live_db,
+                    backtest_db=tmp_path / "no.db",
+                    tournament_src=tmp_path / "no.parquet", store=resolved)
+    surprises = pd.read_parquet(tmp_path / "art" / "surprises.parquet")
+    assert len(surprises) == 1
+    row = surprises.iloc[0]
+    assert row["n_models"] == 2 and row["consensus_source"] == "model_avg"
+    # The named worst model really did assign the lowest p to the outcome.
+    scored = pd.read_parquet(tmp_path / "art" / "scored.parquet")
+    worst_p = scored.set_index("model_id")["p_home"].min()
+    assert row["worst_model_p"] == pytest.approx(worst_p)
+    assert row["consensus_p"] == pytest.approx(scored["p_home"].mean())
+
+
+def test_disagreement_from_odds_snapshot(tmp_path):
+    """An h2h snapshot covering the upcoming fixture yields a disagreement row
+    against the PURE de-vigged market (not market_blend)."""
+    from fifapreds.db import init_odds
+
+    store = _store(_HISTORY + [_FIX_FUTURE])
+    model = BaselineElo().fit(store.before("2022-06-01"))
+    live_db = tmp_path / "live.db"
+    conn = sqlite3.connect(live_db)
+    fix = store.upcoming().iloc[0]
+    log_prediction(conn, model, fix, predicted_at="2022-05-30T12:00:00")
+    init_odds(conn)
+    conn.execute(
+        "INSERT INTO odds_snapshots (captured_at, sport_key, market, raw_json)"
+        " VALUES ('2022-05-31T00:00:00', 'soccer_fifa_world_cup', 'h2h', ?)",
+        (_h2h_payload("A", "B"),))
+    conn.commit()
+    conn.close()
+
+    artifacts.build(tmp_path / "art", live_db=live_db,
+                    backtest_db=tmp_path / "no.db",
+                    tournament_src=tmp_path / "no.parquet", store=store)
+    dis = pd.read_parquet(tmp_path / "art" / "disagreement.parquet")
+    assert len(dis) == 1
+    row = dis.iloc[0]
+    # Fair 3.0/3.0/3.0 odds de-vig to uniform; Elo (A favoured) must disagree.
+    assert row["market_p_home"] == pytest.approx(1 / 3, abs=1e-6)
+    expected_delta = max(abs(row[f"model_p_{k}"] - row[f"market_p_{k}"])
+                         for k in ("home", "draw", "away"))
+    assert row["delta"] == pytest.approx(expected_delta) and row["delta"] > 0
+    assert row["model_pick"] == "home"
+    assert row["snapshot_id"] == 1
+
+    # No snapshot at all -> empty frame, not a crash.
+    artifacts.build(tmp_path / "art2", live_db=tmp_path / "missing.db",
+                    backtest_db=tmp_path / "no.db",
+                    tournament_src=tmp_path / "no.parquet", store=store)
+    assert pd.read_parquet(tmp_path / "art2" / "disagreement.parquet").empty
