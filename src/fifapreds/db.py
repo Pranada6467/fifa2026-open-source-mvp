@@ -81,6 +81,18 @@ CREATE TABLE IF NOT EXISTS scores (
     rps           REAL NOT NULL,                       -- ranked probability score (primary)
     scored_at     TEXT NOT NULL
 );
+
+-- E6a: the full scoreline grid behind each goals-model claim, captured AT
+-- PREDICT TIME (a grid can never be honestly backfilled for a live claim).
+-- grid is the row-major float64 bytes of P(home=i, away=j), normalized over
+-- the (n_rows x n_cols) truncated support; scoreline grading (E6b) handles
+-- out-of-grid scores via an explicit tail bucket.
+CREATE TABLE IF NOT EXISTS score_grids (
+    prediction_id INTEGER PRIMARY KEY REFERENCES predictions(prediction_id),
+    n_rows        INTEGER NOT NULL CHECK (n_rows > 0),
+    n_cols        INTEGER NOT NULL CHECK (n_cols > 0),
+    grid          BLOB    NOT NULL
+);
 """
 
 

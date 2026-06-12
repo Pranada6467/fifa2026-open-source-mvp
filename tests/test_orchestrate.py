@@ -151,6 +151,15 @@ def test_full_pipeline(world):
     ).fetchall())
     assert snap_ids["market_blend"] == 72 and snap_ids["fake_goals"] == 0
 
+    # E6a: every goals-model claim captured its scoreline grid at predict
+    # time; W/D/L-only and blend entrants stored none.
+    grids_by_model = dict(conn.execute(
+        """SELECT p.model_id, COUNT(*) FROM score_grids g
+           JOIN predictions p ON p.prediction_id = g.prediction_id
+           GROUP BY p.model_id"""
+    ).fetchall())
+    assert grids_by_model == {"fake_goals": 72}
+
     # SIMULATE: only the goals model simulates; probabilities conserved.
     assert report["simulated"] == {"fake_goals": 64}
     tournament = pd.read_parquet(tmp_path / "artifacts" / "tournament.parquet")

@@ -119,3 +119,59 @@ def test_leaked_training_cutoff_is_violation(setup):
                  (pid,))
     report = score_pending(conn, _store(_HISTORY + [_RESULT]))
     assert report["violations"] == [pid] and report["scored"] == 0
+
+
+# ---------------------------------------------------------------- E6a grids
+def test_goals_model_claim_stores_its_grid(setup):
+    """A goals-capable entrant's full scoreline grid is captured at predict
+    time and round-trips exactly — live grids can never be backfilled."""
+    import numpy as np
+
+    from fifapreds.loop.predict import load_grid
+    from fifapreds.models.base import GoalsModel, ScoreGrid
+
+    conn, store, _, fixture = setup
+
+    class TinyGoals(GoalsModel):
+        model_id = "tiny_goals"
+        model_version = "0"
+        trained_through = pd.Timestamp("2021-12-30")
+
+        def fit(self, matches):
+            return self
+
+        def hyperparams(self):
+            return {}
+
+        def predict_wdl(self, home, away, *, neutral=False):
+            return self.predict_goals(home, away, neutral=neutral).wdl()
+
+        def predict_goals(self, home, away, *, neutral=False):
+            g = np.array([[0.2, 0.1, 0.05],
+                          [0.2, 0.15, 0.05],
+                          [0.1, 0.1, 0.05]])
+            return ScoreGrid(grid=g)
+
+    model = TinyGoals()
+    pid = log_prediction(conn, model, fixture, predicted_at="2021-12-31T12:00:00")
+    grid = load_grid(conn, pid)
+    assert grid is not None and grid.shape == (3, 3)
+    assert grid.sum() == pytest.approx(1.0)
+    np.testing.assert_array_equal(grid, model.predict_goals("A", "B").grid)
+    # The stored W/D/L row and the stored grid tell the same story.
+    row = conn.execute(
+        "SELECT p_home, p_draw, p_away FROM predictions WHERE prediction_id=?",
+        (pid,)).fetchone()
+    wdl = model.predict_goals("A", "B").wdl()
+    assert row[0] == pytest.approx(wdl.home)
+    assert row[1] == pytest.approx(wdl.draw)
+    assert row[2] == pytest.approx(wdl.away)
+
+
+def test_wdl_only_model_stores_no_grid(setup):
+    from fifapreds.loop.predict import load_grid
+
+    conn, _, model, fixture = setup   # BaselineElo: W/D/L only
+    pid = log_prediction(conn, model, fixture, predicted_at="2021-12-31T12:00:00")
+    assert load_grid(conn, pid) is None
+    assert conn.execute("SELECT COUNT(*) FROM score_grids").fetchone()[0] == 0

@@ -17,11 +17,12 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Mapping
 
+import numpy as np
 import pandas as pd
 
 from fifapreds.config import PROJECT_ROOT
 from fifapreds.db import init_predictions
-from fifapreds.models.base import Model
+from fifapreds.models.base import GoalsModel, Model
 
 
 @lru_cache(maxsize=1)
@@ -94,8 +95,34 @@ def log_prediction(
             predicted_at.isoformat(),
         ),
     )
+    prediction_id = int(cur.lastrowid)
+    # E6a: goals-capable models log their full scoreline grid alongside the
+    # W/D/L claim — at predict time, because a live grid can never be honestly
+    # reconstructed later. Same transaction as the prediction row.
+    if isinstance(model, GoalsModel):
+        grid = model.predict_goals(
+            fixture["home_team"], fixture["away_team"], neutral=neutral
+        ).grid
+        conn.execute(
+            """INSERT INTO score_grids (prediction_id, n_rows, n_cols, grid)
+               VALUES (?, ?, ?, ?)""",
+            (prediction_id, grid.shape[0], grid.shape[1],
+             np.ascontiguousarray(grid, dtype=np.float64).tobytes()),
+        )
     conn.commit()
-    return int(cur.lastrowid)
+    return prediction_id
+
+
+def load_grid(conn: sqlite3.Connection, prediction_id: int) -> np.ndarray | None:
+    """The stored scoreline grid behind a claim (None for W/D/L-only models)."""
+    row = conn.execute(
+        "SELECT n_rows, n_cols, grid FROM score_grids WHERE prediction_id = ?",
+        (prediction_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    n_rows, n_cols, blob = row
+    return np.frombuffer(blob, dtype=np.float64).reshape(n_rows, n_cols)
 
 
 def predict_fixtures(
