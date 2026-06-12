@@ -37,8 +37,14 @@ proof track). Wave 1 complete.
 perishable, live grids can't be backfilled; `load_grid()` reads them back)
 **+ T3 DONE** (`binary_calibration_table` — one reliability binning for any
 binary event, Wilson bands via statsmodels; W/D/L table delegates to it;
-calibration.parquet now carries ci_lo/ci_hi). Next: E4 (tournament backtest +
-leaderboard uncertainty) → E3 (PyMC hierarchical) → E6b (scoreline grading).
+calibration.parquet now carries ci_lo/ci_hi).
+**E4 DONE 2026-06-12**: `tournament_backtest.py` (pre-tournament group-qual MC
+for WC 2014/18/22 — groups derived from fixtures via connected components,
+96 binary events, qual-Brier DC 0.151–0.231; `data/qualification_backtest.parquet`
+COMMITTED) + `leaderboard.py` (seeded paired bootstrap → CIs + best/tied/behind
+badges; **headline: elo_baseline is TIED with dixon_coles at n=192 — the gap is
+noise**) + viewer verdicts/CIs + qualification section w/ Wilson bars.
+Next: E3 (PyMC hierarchical) → E6b (scoreline grading).
 
 Done:
 - `ingest.py` (T1) — `data/processed/matches.parquet` from martj42.
