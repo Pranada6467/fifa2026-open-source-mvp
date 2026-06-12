@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-06-11T12:41:50.343956+00:00",
-  "code_version": "54dcedb",
+  "generated_at": "2026-06-12T07:55:16.546054+00:00",
+  "code_version": "75adec8",
   "data_through": "2026-06-10",
   "counts": {
     "upcoming": 432,
-    "leaderboard": 6,
-    "scored": 384,
-    "calibration": 20,
+    "leaderboard": 0,
+    "scored": 0,
+    "calibration": 0,
     "tournament": 96
   },
   "models": [
@@ -17,5 +17,7 @@
     "elo_importance",
     "market_blend"
   ],
-  "notes": []
+  "notes": [
+    "missing source: /home/runner/work/fifa2026-open-source-mvp/fifa2026-open-source-mvp/data/backtest.db"
+  ]
 }
