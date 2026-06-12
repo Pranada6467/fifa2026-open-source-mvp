@@ -23,6 +23,15 @@ from here the project is OPERATING the loop, not building it.**
 Action commits DB+artifacts; violations gate exits 2 and turns the build red)
 **+ T2 fit-failure resilience** (`_fit_roster` drops an entrant on
 RuntimeError/ValueError/LinAlgError/PyMC SamplingError instead of crashing).
+**E2 public narrative board: DONE 2026-06-12** (design-reviewed, 8 locked
+decisions in `~/.claude/plans/crispy-singing-kettle.md`): viewer restructured —
+calibration hero w/ computed verdict + solid-backtest/hollow-live encoding,
+RPS-ranked pooled leaderboard with coin-flip reference row, market-disagreement
+list, per-match surprise cards, designed empty/small-n states, stale-artifact
+banner. New artifacts: surprises/disagreement parquets, calibration `track`
+column, consensus columns on upcoming. `publish/board.py` = unit-tested verdict
+helpers. NB `data/backtest.db` is now COMMITTED (the nightly publish needs the
+proof track). Wave 1 complete; next: Wave 2 (E6a grid capture first — perishable).
 
 Done:
 - `ingest.py` (T1) — `data/processed/matches.parquet` from martj42.
