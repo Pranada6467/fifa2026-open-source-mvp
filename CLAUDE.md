@@ -31,7 +31,14 @@ list, per-match surprise cards, designed empty/small-n states, stale-artifact
 banner. New artifacts: surprises/disagreement parquets, calibration `track`
 column, consensus columns on upcoming. `publish/board.py` = unit-tested verdict
 helpers. NB `data/backtest.db` is now COMMITTED (the nightly publish needs the
-proof track). Wave 1 complete; next: Wave 2 (E6a grid capture first — perishable).
+proof track). Wave 1 complete.
+**Wave 2 started 2026-06-12: E6a score-grid capture DONE** (`score_grids` table;
+`log_prediction` stores every goals-model claim's grid at predict time —
+perishable, live grids can't be backfilled; `load_grid()` reads them back)
+**+ T3 DONE** (`binary_calibration_table` — one reliability binning for any
+binary event, Wilson bands via statsmodels; W/D/L table delegates to it;
+calibration.parquet now carries ci_lo/ci_hi). Next: E4 (tournament backtest +
+leaderboard uncertainty) → E3 (PyMC hierarchical) → E6b (scoreline grading).
 
 Done:
 - `ingest.py` (T1) — `data/processed/matches.parquet` from martj42.
