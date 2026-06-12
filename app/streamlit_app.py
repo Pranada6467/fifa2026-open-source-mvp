@@ -186,6 +186,7 @@ if leaderboard is None:
             + REBUILD_HINT)
 else:
     lb = leaderboard.assign(track=leaderboard["context"].map(track_of))
+    bands = load("leaderboard_bands.parquet")
     # Verdict caption: best by RPS per track, computed not asserted (D3).
     lines = []
     for track_name, track_lb in lb.groupby("track"):
@@ -194,41 +195,121 @@ else:
         pooled["rps"] = pooled["w_rps"] / pooled["n"]
         best_id = pooled["rps"].idxmin()
         best = pooled.loc[best_id]
+        suffix = ""
+        if bands is not None:
+            n_tied = int(((bands["track"] == track_name)
+                          & (bands["badge"] == "tied")).sum())
+            suffix = (f", with {n_tied} model{'s' if n_tied != 1 else ''} "
+                      f"tied within noise" if n_tied else ", clear of the field")
         lines.append(f"**{track_name}**: {best_id} leads on RPS "
-                     f"({best['rps']:.4f} over {int(best['n'])} claims)")
-    st.markdown(" · ".join(lines) + " — gaps within a few thousandths are "
-                "noise until uncertainty bands land.")
+                     f"({best['rps']:.4f} over {int(best['n'])} claims){suffix}")
+    st.markdown(" · ".join(lines) + ("." if bands is not None else
+                " — gaps within a few thousandths are noise until "
+                "uncertainty bands land."))
 
-    # Default view: <=5 columns (D5), ranked by RPS (D7), pooled per model x
-    # track (per-WC context detail lives in the audit expander), with the
-    # coin-flip reference row inline.
-    pooled_view = (lb.assign(w_rps=lb["rps"] * lb["n"],
-                             w_ll=lb["log_loss"] * lb["n"])
-                   .groupby(["model_id", "track"], as_index=False)
-                   [["n", "w_rps", "w_ll"]].sum())
-    pooled_view["rps"] = pooled_view["w_rps"] / pooled_view["n"]
-    pooled_view["log_loss"] = pooled_view["w_ll"] / pooled_view["n"]
-    view = pooled_view[["model_id", "track", "n", "rps", "log_loss"]].copy()
-    uniform_row = pd.DataFrame([{
-        "model_id": "— coin-flip (uniform) —", "track": "reference",
-        "n": None, "rps": None, "log_loss": UNIFORM_LOG_LOSS,
-    }])
-    view = pd.concat([view.sort_values(["track", "rps"]), uniform_row],
-                     ignore_index=True)
-    st.dataframe(
-        view, hide_index=True, width="stretch",
-        column_config={
-            "model_id": st.column_config.TextColumn("Model"),
-            "track": st.column_config.TextColumn("Track"),
-            "n": st.column_config.NumberColumn("Claims"),
-            "rps": st.column_config.NumberColumn("RPS (primary)", format="%.4f"),
-            "log_loss": st.column_config.NumberColumn("Log-loss", format="%.4f"),
-        },
+    # Default view: <=5 columns (D5), ranked by RPS (D7). E4's bootstrap
+    # bands supply the verdict badges + CIs; until that artifact exists the
+    # view falls back to pooled point estimates.
+    if bands is not None:
+        BADGES = {"best": "🥇 best", "tied": "≈ tied with best",
+                  "behind": "behind"}
+        view = bands.copy()
+        view["verdict"] = view["badge"].map(BADGES)
+        view["rps_ci"] = view.apply(
+            lambda r: f"{r['rps']:.4f}  [{r['rps_lo']:.4f}–{r['rps_hi']:.4f}]",
+            axis=1)
+        view = pd.concat([
+            view[["model_id", "track", "n", "verdict", "rps_ci"]],
+            pd.DataFrame([{"model_id": "— coin-flip (uniform) —",
+                           "track": "reference", "n": None,
+                           "verdict": "reference",
+                           "rps_ci": f"log-loss {UNIFORM_LOG_LOSS:.4f}"}]),
+        ], ignore_index=True)
+        st.dataframe(
+            view, hide_index=True, width="stretch",
+            column_config={
+                "model_id": st.column_config.TextColumn("Model"),
+                "track": st.column_config.TextColumn("Track"),
+                "n": st.column_config.NumberColumn("Claims"),
+                "verdict": st.column_config.TextColumn("Verdict"),
+                "rps_ci": st.column_config.TextColumn("RPS (95% CI)"),
+            },
+        )
+        st.caption("Lower RPS is better; the interval is a seeded bootstrap "
+                   "over graded matches. “Tied” means the paired difference "
+                   "to the leader includes zero — calling that a win would "
+                   "be noise-laundering. `market_blend` is the de-vigged "
+                   "bookmaker consensus blended with the best model. Configs "
+                   "were frozen before kickoff; only ratings update.")
+    else:
+        pooled_view = (lb.assign(w_rps=lb["rps"] * lb["n"],
+                                 w_ll=lb["log_loss"] * lb["n"])
+                       .groupby(["model_id", "track"], as_index=False)
+                       [["n", "w_rps", "w_ll"]].sum())
+        pooled_view["rps"] = pooled_view["w_rps"] / pooled_view["n"]
+        pooled_view["log_loss"] = pooled_view["w_ll"] / pooled_view["n"]
+        view = pooled_view[["model_id", "track", "n", "rps", "log_loss"]].copy()
+        uniform_row = pd.DataFrame([{
+            "model_id": "— coin-flip (uniform) —", "track": "reference",
+            "n": None, "rps": None, "log_loss": UNIFORM_LOG_LOSS,
+        }])
+        view = pd.concat([view.sort_values(["track", "rps"]), uniform_row],
+                         ignore_index=True)
+        st.dataframe(
+            view, hide_index=True, width="stretch",
+            column_config={
+                "model_id": st.column_config.TextColumn("Model"),
+                "track": st.column_config.TextColumn("Track"),
+                "n": st.column_config.NumberColumn("Claims"),
+                "rps": st.column_config.NumberColumn("RPS (primary)", format="%.4f"),
+                "log_loss": st.column_config.NumberColumn("Log-loss", format="%.4f"),
+            },
+        )
+        st.caption("Lower is better. Models above the coin-flip row carry real "
+                   "information; `market_blend` is the de-vigged bookmaker "
+                   "consensus blended with the best model — the bar to beat. "
+                   "Configs were frozen before kickoff; only ratings update.")
+
+# ============================================ qualification foresight (E4)
+st.header("Could it pick the group-stage survivors?")
+qual_cal = load("qualification_calibration.parquet")
+qualification = load("qualification.parquet")
+if qual_cal is None:
+    st.info("The tournament-level backtest hasn't been published yet — "
+            "qualification foresight appears once it runs.")
+else:
+    n_events = int(qualification["wc"].nunique() * 32) if qualification is not None else 0
+    st.markdown(
+        f"Each 2014/18/22 World Cup was re-simulated **before its opening "
+        f"match**; every team's claimed chance of surviving the group is "
+        f"graded against what happened — {n_events} yes/no events, the "
+        f"tournament-level question with enough sample to actually judge.")
+    qpop = qual_cal.dropna(subset=["p_mean"])
+    qpop = qpop[qpop["n"] > 0]
+    diag = alt.Chart(pd.DataFrame({"p": [0.0, 1.0]})).mark_line(
+        strokeDash=[4, 4], color=REF_C).encode(x="p", y="p")
+    bars = alt.Chart(qpop).mark_rule(strokeWidth=2, opacity=0.5).encode(
+        x=alt.X("p_mean", title="Claimed P(advance)",
+                scale=alt.Scale(domain=[0, 1])),
+        y=alt.Y("ci_lo", title="Observed frequency",
+                scale=alt.Scale(domain=[0, 1])),
+        y2="ci_hi",
+        color=alt.Color("model_id", title="Model"),
     )
-    st.caption("Lower is better. Models above the coin-flip row carry real "
-               "information; `market_blend` is the de-vigged bookmaker "
-               "consensus blended with the best model — the bar to beat. "
-               "Configs were frozen before kickoff; only ratings update.")
+    pts = alt.Chart(qpop).mark_circle().encode(
+        x="p_mean", y="freq",
+        size=alt.Size("n", title="Teams in bin"),
+        color=alt.Color("model_id", title="Model"),
+        tooltip=["model_id", "n", alt.Tooltip("p_mean", format=".3f"),
+                 alt.Tooltip("freq", format=".3f"),
+                 alt.Tooltip("ci_lo", format=".3f"),
+                 alt.Tooltip("ci_hi", format=".3f")],
+    )
+    st.altair_chart(diag + bars + pts, width="stretch")
+    st.caption("Vertical lines are 95% Wilson intervals per bin — honest "
+               "uncertainty at this sample size. Deep-run and champion "
+               "calibration are deliberately NOT claimed: three tournaments "
+               "is n=3, and no forecaster can be judged on that.")
 
 # ============================================ market disagreement (D1.3, D6)
 st.header("Where we differ from the market")

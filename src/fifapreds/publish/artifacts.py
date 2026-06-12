@@ -41,12 +41,13 @@ from fifapreds.asof import MatchStore
 from fifapreds.config import PROJECT_ROOT
 from fifapreds.db import DB_PATH
 from fifapreds.loop.predict import code_version
-from fifapreds.loop.score import CLASSES, calibration_table
+from fifapreds.loop.score import CLASSES, binary_calibration_table, calibration_table
 from fifapreds.publish.board import track_of
 
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
 BACKTEST_DB = PROJECT_ROOT / "data" / "backtest.db"
 TOURNAMENT_SRC = PROJECT_ROOT / "data" / "tournament_sim.parquet"
+QUALIFICATION_SRC = PROJECT_ROOT / "data" / "qualification_backtest.parquet"
 
 _PRED_COLS = ["prediction_id", "context", "match_id", "home_team", "away_team",
               "kickoff_ts", "neutral", "tournament", "p_home", "p_draw", "p_away",
@@ -212,6 +213,7 @@ def build(
     live_db: Path | str = DB_PATH,
     backtest_db: Path | str = BACKTEST_DB,
     tournament_src: Path | str = TOURNAMENT_SRC,
+    qualification_src: Path | str = QUALIFICATION_SRC,
     store: MatchStore | None = None,
 ) -> dict:
     """Export all artifacts; returns the meta dict that was written."""
@@ -271,6 +273,33 @@ def build(
     disagreement = _disagreement(upcoming, live_db)
     disagreement.to_parquet(out / "disagreement.parquet", index=False)
 
+    # E4: leaderboard uncertainty bands + verdict badges (seeded bootstrap).
+    from fifapreds.leaderboard import BAND_COLS, bootstrap_bands
+
+    bands = bootstrap_bands(scored) if not scored.empty else pd.DataFrame(
+        columns=BAND_COLS)
+    bands.to_parquet(out / "leaderboard_bands.parquet", index=False)
+
+    # E4: group-qualification backtest passthrough + its reliability table
+    # (the shared T3 binning — Wilson bands included).
+    qual_src = Path(qualification_src)
+    if qual_src.exists():
+        qualification = pd.read_parquet(qual_src)
+        qualification.to_parquet(out / "qualification.parquet", index=False)
+        qtables = []
+        for model_id, grp in qualification.groupby("model_id"):
+            qt = binary_calibration_table(grp["p_advance"].to_numpy(),
+                                          grp["advanced"].to_numpy())
+            qt.insert(0, "model_id", model_id)
+            qtables.append(qt)
+        qual_calibration = pd.concat(qtables, ignore_index=True)
+        qual_calibration.to_parquet(out / "qualification_calibration.parquet",
+                                    index=False)
+    else:
+        qualification = pd.DataFrame()
+        qual_calibration = pd.DataFrame()
+        notes.append(f"missing source: {qual_src}")
+
     # Tournament odds: pass through whatever the orchestrator last simulated.
     if Path(tournament_src).exists():
         tournament = pd.read_parquet(tournament_src)
@@ -290,6 +319,8 @@ def build(
             "calibration": int(len(calibration)),
             "surprises": int(len(surprises)),
             "disagreement": int(len(disagreement)),
+            "leaderboard_bands": int(len(bands)),
+            "qualification": int(len(qualification)),
             "tournament": int(len(tournament)),
         },
         "models": sorted(set(leaderboard["model_id"]) | set(upcoming["model_id"])),

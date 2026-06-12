@@ -59,6 +59,7 @@ def build_synthetic_artifacts(tmp_path: Path) -> tuple[Path, dict]:
     meta = artifacts.build(out, live_db=live_db,
                            backtest_db=tmp_path / "missing-backtest.db",
                            tournament_src=tmp_path / "missing-sim.parquet",
+                           qualification_src=tmp_path / "missing-qual.parquet",
                            store=resolved)
     return out, meta
 
@@ -127,7 +128,8 @@ def test_meta_counts_and_degradation_note(built):
     out, meta = built
     assert meta["counts"] == {"upcoming": 1, "leaderboard": 1, "scored": 1,
                               "calibration": 10, "surprises": 1,
-                              "disagreement": 0, "tournament": 0}
+                              "disagreement": 0, "leaderboard_bands": 1,
+                              "qualification": 0, "tournament": 0}
     assert meta["models"] == ["elo_baseline"]
     assert any("missing-backtest.db" in note for note in meta["notes"])
     assert meta["data_through"] == "2022-01-01"
@@ -138,11 +140,14 @@ def test_build_with_no_sources_is_empty_but_valid(tmp_path):
     store = _store(_HISTORY + [_FIX_FUTURE])
     meta = artifacts.build(tmp_path / "art", live_db=tmp_path / "no.db",
                            backtest_db=tmp_path / "no2.db",
-                           tournament_src=tmp_path / "no3.parquet", store=store)
+                           tournament_src=tmp_path / "no3.parquet",
+                           qualification_src=tmp_path / "no4.parquet",
+                           store=store)
     assert meta["counts"] == {"upcoming": 0, "leaderboard": 0, "scored": 0,
                               "calibration": 0, "surprises": 0,
-                              "disagreement": 0, "tournament": 0}
-    assert len(meta["notes"]) == 3  # two dbs + the tournament sim source
+                              "disagreement": 0, "leaderboard_bands": 0,
+                              "qualification": 0, "tournament": 0}
+    assert len(meta["notes"]) == 4  # two dbs + sim + qualification sources
     assert pd.read_parquet(tmp_path / "art" / "upcoming.parquet").empty
 
 

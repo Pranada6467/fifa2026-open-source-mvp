@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-06-12T13:20:13.001729+00:00",
-  "code_version": "ca2fde4",
+  "generated_at": "2026-06-12T19:17:54.487511+00:00",
+  "code_version": "b6b492c",
   "data_through": "2026-06-10",
   "counts": {
     "upcoming": 432,
@@ -9,6 +9,8 @@
     "calibration": 20,
     "surprises": 0,
     "disagreement": 69,
+    "leaderboard_bands": 2,
+    "qualification": 192,
     "tournament": 96
   },
   "models": [
