@@ -44,7 +44,16 @@ for WC 2014/18/22 — groups derived from fixtures via connected components,
 COMMITTED) + `leaderboard.py` (seeded paired bootstrap → CIs + best/tied/behind
 badges; **headline: elo_baseline is TIED with dixon_coles at n=192 — the gap is
 noise**) + viewer verdicts/CIs + qualification section w/ Wilson bars.
-Next: E3 (PyMC hierarchical) → E6b (scoreline grading).
+**E3 DONE 2026-06-13**: `models/hierarchical.py` — Bayesian hierarchical Poisson
+w/ confederation partial pooling (PyMC/nutpie); posterior-mean grids; `random_seed`
+pin. `data/raw/confederations.csv` (336 teams, 6 confederations). 6th roster
+entrant, goals-capable. Key: Qatar vs Switzerland 6.6% (vs DC 2.3%, Elo 10%).
+**E6b DONE 2026-06-13**: `scores_scoreline` table + `score_scoreline_pending()` —
+scoreline-log-loss (tail bucket), exact-score top-1/top-3, O/U 2.5 + BTTS from
+grids, ET excluded. Wired into orchestrator + publisher (scoreline leaderboard +
+O/U/BTTS calibration artifacts).
+Next: E7 (isotonic recalibration — conditional on miscalibration) → E8 (market
+score grid — conditional on totals odds).
 
 Done:
 - `ingest.py` (T1) — `data/processed/matches.parquet` from martj42.
@@ -112,7 +121,7 @@ Done:
   (`data/tournament_sim.parquet`, seed = UTC YYYYMMDD) → publish, incl.
   `artifacts/tournament.parquet` + a viewer "Tournament odds" section.
   ~25s end-to-end. E2E-tested (incl. tz-aware/naive scoring fix in score.py).
-- 107/107 tests passing.
+- 164/164 tests passing.
 - First tournament odds published 2026-06-11 (DC, 10k sims): Spain 12.0%,
   Argentina 11.8%, England 6.7%; slow-xi flips Argentina/Spain and raises
   Colombia — the leaderboard adjudicates.

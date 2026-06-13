@@ -25,6 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4"]
+bayesian = ["pymc>=5.10", "nutpie>=0.10"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fifapreds"]

@@ -17,6 +17,7 @@ data/raw/*
 !data/raw/groups_2026.csv
 !data/raw/bracket_2026.csv
 !data/raw/routing_r32.parquet
+!data/raw/confederations.csv
 data/processed/
 data/fifa2026.db-*
 data/backtest.db-*

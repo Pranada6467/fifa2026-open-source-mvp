@@ -129,7 +129,9 @@ def test_meta_counts_and_degradation_note(built):
     assert meta["counts"] == {"upcoming": 1, "leaderboard": 1, "scored": 1,
                               "calibration": 10, "surprises": 1,
                               "disagreement": 0, "leaderboard_bands": 1,
-                              "qualification": 0, "tournament": 0}
+                              "qualification": 0, "tournament": 0,
+                              "scoreline_leaderboard": 0,
+                              "scoreline_calibration": 0}
     assert meta["models"] == ["elo_baseline"]
     assert any("missing-backtest.db" in note for note in meta["notes"])
     assert meta["data_through"] == "2022-01-01"
@@ -146,7 +148,9 @@ def test_build_with_no_sources_is_empty_but_valid(tmp_path):
     assert meta["counts"] == {"upcoming": 0, "leaderboard": 0, "scored": 0,
                               "calibration": 0, "surprises": 0,
                               "disagreement": 0, "leaderboard_bands": 0,
-                              "qualification": 0, "tournament": 0}
+                              "qualification": 0, "tournament": 0,
+                              "scoreline_leaderboard": 0,
+                              "scoreline_calibration": 0}
     assert len(meta["notes"]) == 4  # two dbs + sim + qualification sources
     assert pd.read_parquet(tmp_path / "art" / "upcoming.parquet").empty
 

@@ -30,9 +30,48 @@ import pandas as pd
 
 from fifapreds.asof import MatchStore
 from fifapreds.db import init_predictions
+from fifapreds.loop.predict import load_grid
 
 EPS = 1e-9
 CLASSES = ("home", "draw", "away")
+
+# --------------- scoreline-level metrics (E6b) ---------------
+
+
+def scoreline_log_loss(grid: np.ndarray, home_score: int, away_score: int) -> float:
+    """Scoreline log-loss: -ln(G[hs, as]), with tail bucket for out-of-grid
+    or zero-probability scores so the metric stays finite."""
+    n_rows, n_cols = grid.shape
+    if home_score < n_rows and away_score < n_cols:
+        p = grid[home_score, away_score]
+    else:
+        p = 0.0
+    return -np.log(max(p, EPS))
+
+
+def ou25_from_grid(grid: np.ndarray) -> float:
+    """P(total goals > 2.5) = P(total >= 3), derived from the scoreline grid."""
+    total = 0.0
+    n_rows, n_cols = grid.shape
+    for i in range(n_rows):
+        for j in range(n_cols):
+            if i + j >= 3:
+                total += grid[i, j]
+    return total
+
+
+def btts_from_grid(grid: np.ndarray) -> float:
+    """P(both teams score) = sum of G[i,j] where i >= 1 AND j >= 1."""
+    return float(grid[1:, 1:].sum())
+
+
+def top_k_scorelines(grid: np.ndarray, k: int = 3) -> list[tuple[int, int]]:
+    """The k most likely scorelines from the grid, descending by probability."""
+    flat = grid.ravel()
+    indices = np.argpartition(flat, -k)[-k:]
+    indices = indices[np.argsort(flat[indices])[::-1]]
+    n_cols = grid.shape[1]
+    return [(int(idx // n_cols), int(idx % n_cols)) for idx in indices]
 
 
 def _naive_utc(ts) -> pd.Timestamp:
@@ -189,3 +228,87 @@ def score_pending(conn: sqlite3.Connection, store: MatchStore) -> dict:
         "violations": violations,
         "results": pd.DataFrame(scored_rows),
     }
+
+
+def score_scoreline_pending(conn: sqlite3.Connection, store: MatchStore) -> dict:
+    """Grade scoreline predictions for resolved matches (E6b).
+
+    Only predictions with a stored grid (goals-capable models) are eligible.
+    Matches that went to extra time are excluded — the grid is a 90-minute
+    model but martj42 scores include ET goals.
+
+    Returns {"scored": int, "skipped_et": int, "pending": int}.
+    """
+    init_predictions(conn)
+    todo = pd.read_sql_query(
+        """SELECT p.prediction_id, p.context, p.home_team, p.away_team,
+                  p.kickoff_ts, p.training_cutoff, p.predicted_at,
+                  p.model_id
+           FROM predictions p
+           JOIN score_grids sg ON sg.prediction_id = p.prediction_id
+           LEFT JOIN scores_scoreline ss ON ss.prediction_id = p.prediction_id
+           WHERE ss.prediction_id IS NULL""",
+        conn,
+    )
+    if todo.empty:
+        return {"scored": 0, "skipped_et": 0, "pending": 0}
+
+    played = store.played
+    result_lookup = {
+        (d.normalize(), h, a): (int(hs), int(as_), bool(et))
+        for d, h, a, hs, as_, et in zip(
+            played["date"], played["home_team"], played["away_team"],
+            played["home_score"], played["away_score"], played["went_to_et"],
+        )
+    }
+
+    rows, skipped_et, pending = [], 0, 0
+    now = datetime.now(timezone.utc).isoformat()
+    for row in todo.itertuples(index=False):
+        kickoff = _naive_utc(row.kickoff_ts)
+        if _naive_utc(row.training_cutoff) >= kickoff:
+            continue
+        if row.context == "live" and _naive_utc(row.predicted_at) >= kickoff:
+            continue
+        result = result_lookup.get((kickoff.normalize(), row.home_team, row.away_team))
+        if result is None:
+            pending += 1
+            continue
+        hs, as_, went_to_et = result
+        if went_to_et:
+            skipped_et += 1
+            continue
+
+        grid = load_grid(conn, row.prediction_id)
+        if grid is None:
+            continue
+
+        top3 = top_k_scorelines(grid, k=3)
+        rows.append({
+            "prediction_id": int(row.prediction_id),
+            "home_score": hs,
+            "away_score": as_,
+            "scoreline_log_loss": scoreline_log_loss(grid, hs, as_),
+            "exact_score_hit": int((hs, as_) == top3[0]),
+            "top3_hit": int((hs, as_) in top3),
+            "ou25_prob": ou25_from_grid(grid),
+            "ou25_outcome": int(hs + as_ >= 3),
+            "btts_prob": btts_from_grid(grid),
+            "btts_outcome": int(hs >= 1 and as_ >= 1),
+            "scored_at": now,
+        })
+
+    if rows:
+        conn.executemany(
+            """INSERT INTO scores_scoreline
+               (prediction_id, home_score, away_score, scoreline_log_loss,
+                exact_score_hit, top3_hit, ou25_prob, ou25_outcome,
+                btts_prob, btts_outcome, scored_at)
+               VALUES (:prediction_id, :home_score, :away_score,
+                       :scoreline_log_loss, :exact_score_hit, :top3_hit,
+                       :ou25_prob, :ou25_outcome, :btts_prob, :btts_outcome,
+                       :scored_at)""",
+            rows,
+        )
+        conn.commit()
+    return {"scored": len(rows), "skipped_et": skipped_et, "pending": pending}

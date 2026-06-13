@@ -93,6 +93,24 @@ CREATE TABLE IF NOT EXISTS score_grids (
     n_cols        INTEGER NOT NULL CHECK (n_cols > 0),
     grid          BLOB    NOT NULL
 );
+
+-- E6b: scoreline-level grading for goals-capable models. Graded separately
+-- from W/D/L scores because (a) only predictions WITH a stored grid qualify,
+-- (b) went_to_et matches are excluded (90-min model vs 120-min scores), and
+-- (c) metrics are scoreline-specific (exact-score hit, O/U 2.5, BTTS).
+CREATE TABLE IF NOT EXISTS scores_scoreline (
+    prediction_id     INTEGER PRIMARY KEY REFERENCES predictions(prediction_id),
+    home_score        INTEGER NOT NULL,
+    away_score        INTEGER NOT NULL,
+    scoreline_log_loss REAL   NOT NULL,
+    exact_score_hit   INTEGER NOT NULL CHECK (exact_score_hit IN (0, 1)),
+    top3_hit          INTEGER NOT NULL CHECK (top3_hit IN (0, 1)),
+    ou25_prob         REAL    NOT NULL,
+    ou25_outcome      INTEGER NOT NULL CHECK (ou25_outcome IN (0, 1)),
+    btts_prob         REAL    NOT NULL,
+    btts_outcome      INTEGER NOT NULL CHECK (btts_outcome IN (0, 1)),
+    scored_at         TEXT    NOT NULL
+);
 """
 
 

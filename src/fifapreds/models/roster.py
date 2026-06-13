@@ -30,6 +30,12 @@ from fifapreds.models.base import GoalsModel, Model
 from fifapreds.models.dixoncoles import DixonColes
 from fifapreds.models.elo import BaselineElo
 
+try:
+    from fifapreds.models.hierarchical import HierarchicalPoisson as _HP
+    _HAS_PYMC = True
+except ImportError:
+    _HAS_PYMC = False
+
 # Tournament -> K multiplier for EloImportance, keyed by EXACT martj42
 # tournament strings (verified against data/processed/matches.parquet,
 # 2026-06-11; match counts in comments — test_roster.py enforces that every
@@ -98,19 +104,34 @@ class DixonColesSlowXi(DixonColes):
         super().__init__(**overrides)
 
 
+if _HAS_PYMC:
+    class HierarchicalPoisson(_HP):
+        """Bayesian hierarchical Poisson with confederation partial pooling.
+
+        Hypothesis: borrowing strength across confederation members stabilizes
+        predictions for thin cross-confederation matchups where Dixon-Coles is
+        documented overconfident (backtest 0-0.1 bin: 7.7% claimed, 17.4% observed)."""
+
+        model_id = "hierarchical_poisson"
+        model_version = "1"
+
+
 def default_roster() -> list[Model]:
     """Fresh, unfitted instances of every frozen leaderboard entrant.
 
     A new list of new objects on every call — callers fit and mutate their own
     copies, so no state leaks between the live loop, backtests, and tests.
     """
-    return [
+    roster: list[Model] = [
         BaselineElo(),
         DixonColes(),
         EloDecay(),
         EloImportance(),
         DixonColesSlowXi(),
     ]
+    if _HAS_PYMC:
+        roster.append(HierarchicalPoisson())
+    return roster
 
 
 def goals_models(roster: Iterable[Model]) -> list[GoalsModel]:

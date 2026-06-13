@@ -273,6 +273,60 @@ def build(
     disagreement = _disagreement(upcoming, live_db)
     disagreement.to_parquet(out / "disagreement.parquet", index=False)
 
+    # E6b: scoreline leaderboard + O/U 2.5 and BTTS calibration.
+    scoreline_sql = """
+        SELECT p.model_id, p.context, ss.*
+        FROM scores_scoreline ss
+        JOIN predictions p ON p.prediction_id = ss.prediction_id
+    """
+    scoreline_scored = _concat(
+        [_read(live_db, scoreline_sql), _read(backtest_db, scoreline_sql)],
+        ["model_id", "context", "prediction_id", "home_score", "away_score",
+         "scoreline_log_loss", "exact_score_hit", "top3_hit",
+         "ou25_prob", "ou25_outcome", "btts_prob", "btts_outcome", "scored_at"],
+    )
+    if not scoreline_scored.empty:
+        sl_lb = (
+            scoreline_scored.groupby(["model_id", "context"])
+            .agg(
+                n=("prediction_id", "count"),
+                scoreline_log_loss=("scoreline_log_loss", "mean"),
+                exact_score_pct=("exact_score_hit", "mean"),
+                top3_pct=("top3_hit", "mean"),
+                ou25_brier=("ou25_prob", lambda x: float(
+                    ((x.values - scoreline_scored.loc[x.index, "ou25_outcome"].values) ** 2).mean()
+                )),
+                btts_brier=("btts_prob", lambda x: float(
+                    ((x.values - scoreline_scored.loc[x.index, "btts_outcome"].values) ** 2).mean()
+                )),
+            )
+            .reset_index()
+            .sort_values(["context", "scoreline_log_loss"])
+        )
+        sl_lb.to_parquet(out / "scoreline_leaderboard.parquet", index=False)
+
+        sl_cal_tables = []
+        by_track = scoreline_scored.assign(track=scoreline_scored["context"].map(track_of))
+        for (model_id, track), grp in by_track.groupby(["model_id", "track"]):
+            for event, prob_col, outcome_col in [
+                ("ou25", "ou25_prob", "ou25_outcome"),
+                ("btts", "btts_prob", "btts_outcome"),
+            ]:
+                ct = binary_calibration_table(
+                    grp[prob_col].to_numpy(), grp[outcome_col].to_numpy()
+                )
+                ct.insert(0, "model_id", model_id)
+                ct.insert(1, "track", track)
+                ct.insert(2, "event", event)
+                sl_cal_tables.append(ct)
+        sl_calibration = pd.concat(sl_cal_tables, ignore_index=True)
+        sl_calibration.to_parquet(out / "scoreline_calibration.parquet", index=False)
+    else:
+        sl_lb = pd.DataFrame()
+        sl_calibration = pd.DataFrame()
+        pd.DataFrame().to_parquet(out / "scoreline_leaderboard.parquet", index=False)
+        pd.DataFrame().to_parquet(out / "scoreline_calibration.parquet", index=False)
+
     # E4: leaderboard uncertainty bands + verdict badges (seeded bootstrap).
     from fifapreds.leaderboard import BAND_COLS, bootstrap_bands
 
@@ -322,6 +376,8 @@ def build(
             "leaderboard_bands": int(len(bands)),
             "qualification": int(len(qualification)),
             "tournament": int(len(tournament)),
+            "scoreline_leaderboard": int(len(sl_lb)),
+            "scoreline_calibration": int(len(sl_calibration)),
         },
         "models": sorted(set(leaderboard["model_id"]) | set(upcoming["model_id"])),
         "notes": notes,

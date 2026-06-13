@@ -10,6 +10,11 @@ from fifapreds.models.roster import (
     goals_models,
 )
 
+try:
+    from fifapreds.models.hierarchical import HierarchicalPoisson
+except ImportError:
+    pass
+
 __all__ = [
     "WDL", "ScoreGrid", "Model", "GoalsModel", "BaselineElo", "DixonColes",
     "MarketBlend", "EloDecay", "EloImportance", "DixonColesSlowXi",

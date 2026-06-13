@@ -179,7 +179,7 @@ def run(
     the identical path against a synthetic world. Returns a step report.
     """
     from fifapreds.loop.predict import predict_upcoming
-    from fifapreds.loop.score import score_pending
+    from fifapreds.loop.score import score_pending, score_scoreline_pending
     from fifapreds.publish import artifacts
 
     report: dict = {"notes": []}
@@ -192,6 +192,11 @@ def run(
     report["scored"] = scored["scored"]
     report["score_pending"] = scored["pending"]
     report["violations"] = scored["violations"]
+
+    # E6b: scoreline grading for goals-model predictions with stored grids.
+    scoreline = score_scoreline_pending(conn, store)
+    report["scoreline_scored"] = scoreline["scored"]
+    report["scoreline_skipped_et"] = scoreline["skipped_et"]
 
     # UPDATE — refit the frozen roster on the as-of store.
     fitted, fit_notes = _fit_roster(roster if roster is not None else default_roster(),
@@ -260,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
                  live_db=args.db if args.db else None)
 
     print(f"score: {report['scored']} graded, {report['score_pending']} awaiting results")
+    print(f"scoreline: {report['scoreline_scored']} graded, "
+          f"{report['scoreline_skipped_et']} skipped (ET)")
     for note in report["notes"]:
         print(f"update: {note}")
     for model_id, n in report["predicted"].items():
