@@ -15,6 +15,7 @@ from tests.test_artifacts import build_synthetic_artifacts
 APP = str(Path(__file__).resolve().parents[1] / "app" / "streamlit_app.py")
 
 HEADERS = ["Does 70% mean 70%?", "Which technique is winning?",
+           "And at picking the score?",
            "Could it pick the group-stage survivors?",
            "Where we differ from the market", "The system didn't see these coming",
            "Match odds", "Who wins the World Cup?", "Audit trail"]
@@ -49,9 +50,10 @@ def test_app_renders_artifacts(tmp_path, monkeypatch):
 def test_app_empty_states_instead_of_crash(tmp_path, monkeypatch):
     at = _run(tmp_path / "empty", monkeypatch)
     # Every section shows its designed empty state (D2), none crash:
-    # meta, calibration hero, leaderboard, qualification, disagreement,
-    # surprises, match odds, tournament, audit scored, audit leaderboard.
-    assert len(at.info) == 10
+    # meta, calibration hero, leaderboard, scoreline accuracy, qualification,
+    # disagreement, surprises, match odds, tournament, audit scored, audit
+    # leaderboard.
+    assert len(at.info) == 11
     assert len(at.dataframe) == 0
     # The page story is still fully present.
     assert [h.value for h in at.header] == HEADERS

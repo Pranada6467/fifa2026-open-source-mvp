@@ -270,6 +270,90 @@ else:
                    "consensus blended with the best model — the bar to beat. "
                    "Configs were frozen before kickoff; only ratings update.")
 
+# ============================================ scoreline accuracy (E6b)
+st.header("And at picking the score?")
+scoreline_lb = load("scoreline_leaderboard.parquet")
+scoreline_cal = load("scoreline_calibration.parquet")
+if scoreline_lb is None:
+    st.info(
+        "Scoreline grading kicks in once goals-model claims are graded against "
+        f"real results — first grading expected after {next_update_label()}. "
+        "Until then this section stays empty on purpose: exact-score accuracy "
+        "is not estimable from zero matches.")
+else:
+    sl = scoreline_lb.assign(track=scoreline_lb["context"].map(track_of))
+    # Verdict caption (computed, never hardcoded): best by scoreline log-loss
+    # per track, plus exact-score hit rate for context.
+    lines = []
+    for track_name, track_lb in sl.groupby("track"):
+        best = track_lb.sort_values("scoreline_log_loss").iloc[0]
+        lines.append(
+            f"**{track_name}**: `{best['model_id']}` leads on scoreline log-loss "
+            f"({best['scoreline_log_loss']:.3f}) and called the exact score "
+            f"in {best['exact_score_pct']:.0%} of {int(best['n'])} matches"
+        )
+    st.markdown(" · ".join(lines) + ".")
+
+    view = sl[["model_id", "track", "n", "scoreline_log_loss",
+               "exact_score_pct", "top3_pct", "ou25_brier", "btts_brier"]]
+    st.dataframe(
+        view, hide_index=True, width="stretch",
+        column_config={
+            "model_id": st.column_config.TextColumn("Model"),
+            "track": st.column_config.TextColumn("Track"),
+            "n": st.column_config.NumberColumn("Claims"),
+            "scoreline_log_loss":
+                st.column_config.NumberColumn("Scoreline log-loss", format="%.3f"),
+            "exact_score_pct": prob_col("Exact-score hit"),
+            "top3_pct": prob_col("Top-3 hit"),
+            "ou25_brier":
+                st.column_config.NumberColumn("O/U 2.5 Brier", format="%.3f"),
+            "btts_brier":
+                st.column_config.NumberColumn("BTTS Brier", format="%.3f"),
+        },
+    )
+    st.caption("Scoreline log-loss is the natural-log score on the full grid "
+               "(tail bucket for out-of-grid). Exact-score hit / top-3 hit are "
+               "the share of matches whose actual score was the model's most "
+               "likely / top-3. Lower is better for log-loss and Brier; higher "
+               "for hit rates. Extra-time matches are excluded — the 90-min "
+               "model can't be graded on 120-min scores.")
+
+    # Reliability — Over 2.5 goals + BTTS, the two binary side-markets users
+    # actually parse. Wilson bands per bin (T3).
+    if scoreline_cal is not None:
+        for event, event_label in [("ou25", "Over 2.5 goals"),
+                                   ("btts", "Both teams score")]:
+            cal = scoreline_cal[scoreline_cal["event"] == event].dropna(
+                subset=["p_mean"])
+            cal = cal[cal["n"] > 0]
+            if cal.empty:
+                continue
+            st.markdown(f"**{event_label} — reliability**")
+            diag = alt.Chart(pd.DataFrame({"p": [0.0, 1.0]})).mark_line(
+                strokeDash=[4, 4], color=REF_C).encode(x="p", y="p")
+            rule = alt.Chart(cal).mark_rule(strokeWidth=2, opacity=0.5).encode(
+                x=alt.X("p_mean", title=f"Claimed P({event_label})",
+                        scale=alt.Scale(domain=[0, 1])),
+                y=alt.Y("ci_lo", title="Observed frequency",
+                        scale=alt.Scale(domain=[0, 1])),
+                y2="ci_hi",
+                color=alt.Color("model_id", title="Model"),
+            )
+            pts = alt.Chart(cal).mark_circle().encode(
+                x="p_mean", y="freq",
+                size=alt.Size("n", title="Matches in bin"),
+                color=alt.Color("model_id", title="Model"),
+                tooltip=["model_id", "track", "n",
+                         alt.Tooltip("p_mean", format=".3f"),
+                         alt.Tooltip("freq", format=".3f"),
+                         alt.Tooltip("ci_lo", format=".3f"),
+                         alt.Tooltip("ci_hi", format=".3f")],
+            )
+            st.altair_chart(diag + rule + pts, width="stretch")
+        st.caption("Bars are 95% Wilson intervals per bin — honest uncertainty "
+                   "at this sample size.")
+
 # ============================================ qualification foresight (E4)
 st.header("Could it pick the group-stage survivors?")
 qual_cal = load("qualification_calibration.parquet")
@@ -377,6 +461,7 @@ else:
 # ===================================================== utility — match odds
 st.header("Match odds")
 upcoming = load("upcoming.parquet")
+scoreline_topn = load("scoreline_topn.parquet")
 if upcoming is None:
     if meta:
         st.info("No upcoming fixtures to price — either the tournament is "
@@ -439,6 +524,67 @@ else:
         ).properties(height=60)
     )
     st.altair_chart(bar, width="stretch")
+
+    # ----- predicted scoreline (E6a grids surfaced via scoreline_topn) -----
+    sl = (scoreline_topn[scoreline_topn["match_id"] == row["match_id"]]
+          if scoreline_topn is not None else None)
+    st.subheader("Predicted scoreline")
+    if sl is None or sl.empty:
+        st.caption("No stored score grid for this fixture — the claim was "
+                   "logged before scoreline capture was deployed. Future "
+                   "predictions will include scorelines.")
+    else:
+        sl_models = sorted(sl["model_id"].unique())
+        # Single goals model → render the model name as caption, no selector.
+        if len(sl_models) > 1:
+            sl_pick = st.selectbox(
+                "Goals model", sl_models,
+                key=f"sl_model_{row['match_id']}",
+                help="Only goals-capable models (Dixon-Coles family, hierarchical) "
+                     "produce a full score grid. Other models predict W/D/L only.",
+            )
+        else:
+            sl_pick = sl_models[0]
+            st.caption(f"From `{sl_pick}` (the only goals-capable model with a stored grid).")
+        sl_row = sl[sl["model_id"] == sl_pick].iloc[0]
+
+        # Hero — most likely scoreline as a single readable line.
+        s1_h, s1_a = int(sl_row["s1_h"]), int(sl_row["s1_a"])
+        winner = (f"{home} win" if s1_h > s1_a
+                  else "draw" if s1_h == s1_a
+                  else f"{away} win")
+        st.markdown(
+            f"**Most likely:** {home} **{s1_h}–{s1_a}** {away} "
+            f"— {sl_row['top1_p']:.1%} ({winner})"
+        )
+
+        # Quick stats — the two bets a casual fan actually parses.
+        q1, q2 = st.columns(2)
+        q1.metric("Over 2.5 goals", f"{sl_row['ou25_prob']:.0%}",
+                  help="Probability the match ends with 3+ goals (regular time).")
+        q2.metric("Both teams score", f"{sl_row['btts_prob']:.0%}",
+                  help="Probability both sides score at least once (regular time).")
+
+        # Top-5 list — clear hierarchy, biggest chance first.
+        top_rows = []
+        for i in range(1, 6):
+            h_i, a_i, p_i = (int(sl_row[f"s{i}_h"]), int(sl_row[f"s{i}_a"]),
+                             float(sl_row[f"s{i}_p"]))
+            top_rows.append({
+                "Score": f"{home} {h_i}–{a_i} {away}",
+                "Probability": p_i,
+            })
+        st.dataframe(
+            pd.DataFrame(top_rows), hide_index=True, width="stretch",
+            column_config={
+                "Score": st.column_config.TextColumn("Most likely scorelines"),
+                "Probability": prob_col("Probability"),
+            },
+        )
+        st.caption("Top-5 full-time scorelines (regular 90 minutes — extra time "
+                   "and penalties not modelled here). The remaining ~"
+                   f"{max(0.0, 1.0 - sum(r['Probability'] for r in top_rows)):.0%} "
+                   "lives in the long tail of higher-scoring or unusual results.")
 
     # Every model's call for this match, market blend pinned to the top.
     sel["_consensus"] = (sel["model_id"] == "market_blend").astype(int)

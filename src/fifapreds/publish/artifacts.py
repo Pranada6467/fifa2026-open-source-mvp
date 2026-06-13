@@ -25,6 +25,9 @@ Outputs (all parquet unless noted):
 - tournament.parquet   Monte Carlo trophy odds per (model_id, team), copied
                        from data/tournament_sim.parquet when the orchestrator
                        has produced one (T11/T14)
+- scoreline_topn.parquet  per (upcoming match, goals-capable model) the top-5
+                       most likely scorelines + O/U 2.5 + BTTS probabilities,
+                       derived from the grid stored at predict time (E6a)
 - meta.json            generated_at, git sha, data-through date, row counts
 """
 from __future__ import annotations
@@ -40,8 +43,15 @@ import pandas as pd
 from fifapreds.asof import MatchStore
 from fifapreds.config import PROJECT_ROOT
 from fifapreds.db import DB_PATH
-from fifapreds.loop.predict import code_version
-from fifapreds.loop.score import CLASSES, binary_calibration_table, calibration_table
+from fifapreds.loop.predict import code_version, load_grid
+from fifapreds.loop.score import (
+    CLASSES,
+    binary_calibration_table,
+    btts_from_grid,
+    calibration_table,
+    ou25_from_grid,
+    top_k_scorelines,
+)
 from fifapreds.publish.board import track_of
 
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
@@ -207,6 +217,52 @@ def _disagreement(upcoming: pd.DataFrame, live_db: Path | str) -> pd.DataFrame:
             .sort_values("delta", ascending=False, ignore_index=True))
 
 
+_TOPN_K = 5
+_SCORELINE_COLS = (
+    ["match_id", "model_id", "home_team", "away_team", "kickoff_ts",
+     "ou25_prob", "btts_prob", "top1_p"]
+    + [f"s{i}_{f}" for i in range(1, _TOPN_K + 1) for f in ("h", "a", "p")]
+)
+
+
+def _scoreline_topn(upcoming: pd.DataFrame, live_db: Path | str) -> pd.DataFrame:
+    """Per (upcoming match, goals-capable model): top-K most likely scorelines
+    plus O/U 2.5 and BTTS, derived from the grid stored at predict time. Rows
+    without a stored grid (W/D/L-only models like Elo, market_blend) are
+    omitted. The viewer needs this because score_grids lives in SQLite and
+    the public board is artifact-only."""
+    empty = pd.DataFrame(columns=_SCORELINE_COLS)
+    if upcoming.empty or not Path(live_db).exists():
+        return empty
+    rows = []
+    with sqlite3.connect(live_db) as conn:
+        for r in upcoming.itertuples(index=False):
+            grid = load_grid(conn, int(r.prediction_id))
+            if grid is None:
+                continue
+            top = top_k_scorelines(grid, k=_TOPN_K)
+            row = {
+                "match_id": r.match_id,
+                "model_id": r.model_id,
+                "home_team": r.home_team,
+                "away_team": r.away_team,
+                "kickoff_ts": r.kickoff_ts,
+                "ou25_prob": float(ou25_from_grid(grid)),
+                "btts_prob": float(btts_from_grid(grid)),
+                "top1_p": float(grid[top[0][0], top[0][1]]),
+            }
+            for i, (h, a) in enumerate(top, start=1):
+                row[f"s{i}_h"] = int(h)
+                row[f"s{i}_a"] = int(a)
+                row[f"s{i}_p"] = float(grid[h, a])
+            rows.append(row)
+    if not rows:
+        return empty
+    return pd.DataFrame(rows, columns=_SCORELINE_COLS).sort_values(
+        ["kickoff_ts", "match_id", "model_id"], ignore_index=True
+    )
+
+
 def build(
     out_dir: Path | str = ARTIFACTS_DIR,
     *,
@@ -237,6 +293,10 @@ def build(
         upcoming = pd.DataFrame(columns=_PRED_COLS)
     upcoming = _with_consensus(upcoming)
     upcoming.to_parquet(out / "upcoming.parquet", index=False)
+
+    # Predicted scorelines (top-K + O/U 2.5 + BTTS per goals-model claim).
+    scoreline_topn = _scoreline_topn(upcoming, live_db)
+    scoreline_topn.to_parquet(out / "scoreline_topn.parquet", index=False)
 
     leaderboard = _concat([_read(live_db, _LEADERBOARD_SQL), _read(backtest_db, _LEADERBOARD_SQL)],
                           ["model_id", "context", "n", "log_loss", "brier", "rps"])
@@ -378,6 +438,7 @@ def build(
             "tournament": int(len(tournament)),
             "scoreline_leaderboard": int(len(sl_lb)),
             "scoreline_calibration": int(len(sl_calibration)),
+            "scoreline_topn": int(len(scoreline_topn)),
         },
         "models": sorted(set(leaderboard["model_id"]) | set(upcoming["model_id"])),
         "notes": notes,
