@@ -1,20 +1,20 @@
 {
-  "generated_at": "2026-06-17T11:22:38.424403+00:00",
-  "code_version": "1d83c5f",
-  "data_through": "2026-06-16",
+  "generated_at": "2026-06-18T10:55:11.943183+00:00",
+  "code_version": "c185a29",
+  "data_through": "2026-06-17",
   "counts": {
-    "upcoming": 312,
+    "upcoming": 288,
     "leaderboard": 12,
-    "scored": 748,
+    "scored": 868,
     "calibration": 80,
-    "surprises": 25,
-    "disagreement": 49,
+    "surprises": 29,
+    "disagreement": 45,
     "leaderboard_bands": 8,
     "qualification": 192,
     "tournament": 96,
     "scoreline_leaderboard": 2,
     "scoreline_calibration": 40,
-    "scoreline_topn": 104
+    "scoreline_topn": 96
   },
   "models": [
     "dixon_coles",
