@@ -599,14 +599,19 @@ else:
             st.caption(f"From `{sl_pick}` (the only goals-capable model with a stored grid).")
         sl_row = sl[sl["model_id"] == sl_pick].iloc[0]
 
-        # Hero — most likely scoreline as a single readable line.
+        # Hero — modal scoreline (Item 11 / DD3): the rounded posterior
+        # mean is the metric that actually moves under tail-fattening /
+        # calibration work, unlike argmax which is invariant to monotone
+        # transforms. Argmax stays in the audit list below for power users.
         s1_h, s1_a = int(sl_row["s1_h"]), int(sl_row["s1_a"])
-        winner = (f"{home} win" if s1_h > s1_a
-                  else "draw" if s1_h == s1_a
-                  else f"{away} win")
-        st.markdown(
-            f"**Most likely:** {home} **{s1_h}–{s1_a}** {away} "
-            f"— {sl_row['top1_p']:.1%} ({winner})"
+        if "modal_h" in sl_row.index and "modal_a" in sl_row.index:
+            modal_h, modal_a = int(sl_row["modal_h"]), int(sl_row["modal_a"])
+        else:                              # legacy artifact predating Item 11
+            modal_h, modal_a = s1_h, s1_a
+        st.markdown(f"**{home} {modal_h}–{modal_a} {away}**")
+        st.caption(
+            f"Average outcome by goals model. The most-likely single score "
+            f"({s1_h}–{s1_a}, {sl_row['top1_p']:.0%}) is in the audit."
         )
 
         # Quick stats — the two bets a casual fan actually parses.

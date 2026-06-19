@@ -56,7 +56,7 @@ from fifapreds.loop.score import (
     rps,
     top_k_scorelines,
 )
-from fifapreds.publish.board import track_of
+from fifapreds.publish.board import modal_scoreline_from_grid, track_of
 
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
 BACKTEST_DB = PROJECT_ROOT / "data" / "backtest.db"
@@ -341,9 +341,12 @@ def _disagreement(upcoming: pd.DataFrame, live_db: Path | str) -> pd.DataFrame:
 
 
 _TOPN_K = 5
+# Item 11: modal_h / modal_a expose the new headline scoreline (E[goals]
+# rounded) alongside the existing argmax top-5. The viewer chooses which
+# to render where (modal in headline, top-5 in audit expander per DD3).
 _SCORELINE_COLS = (
     ["match_id", "model_id", "home_team", "away_team", "kickoff_ts",
-     "ou25_prob", "btts_prob", "top1_p"]
+     "ou25_prob", "btts_prob", "top1_p", "modal_h", "modal_a"]
     + [f"s{i}_{f}" for i in range(1, _TOPN_K + 1) for f in ("h", "a", "p")]
 )
 
@@ -364,6 +367,7 @@ def _scoreline_topn(upcoming: pd.DataFrame, live_db: Path | str) -> pd.DataFrame
             if grid is None:
                 continue
             top = top_k_scorelines(grid, k=_TOPN_K)
+            modal_h, modal_a = modal_scoreline_from_grid(grid)
             row = {
                 "match_id": r.match_id,
                 "model_id": r.model_id,
@@ -373,6 +377,8 @@ def _scoreline_topn(upcoming: pd.DataFrame, live_db: Path | str) -> pd.DataFrame
                 "ou25_prob": float(ou25_from_grid(grid)),
                 "btts_prob": float(btts_from_grid(grid)),
                 "top1_p": float(grid[top[0][0], top[0][1]]),
+                "modal_h": modal_h,
+                "modal_a": modal_a,
             }
             for i, (h, a) in enumerate(top, start=1):
                 row[f"s{i}_h"] = int(h)

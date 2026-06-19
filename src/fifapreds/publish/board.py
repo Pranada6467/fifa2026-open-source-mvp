@@ -91,3 +91,48 @@ def is_stale(generated_at_iso: str, now: datetime | None = None,
 def track_of(context: str) -> str:
     """Collapse prediction contexts to the board's two tracks."""
     return "live" if context == "live" else "backtest"
+
+
+# ----------------------------------------------------- Item 11: modal scoreline
+
+def modal_scoreline_from_grid(grid: np.ndarray) -> tuple[int, int]:
+    """The headline scoreline as `(round(E[home]), round(E[away]))`.
+
+    Calibration / ensemble work pushes probability mass around but rarely
+    changes `argmax(grid)` — the per-cell maximum is invariant under
+    monotone-per-class transforms. The modal (rounded-mean) scoreline
+    DOES move when the underlying posterior fattens its tail (NegBin /
+    BivariatePoisson) or sharpens (temperature scaling), so this is the
+    user-visible metric that actually tracks the model work.
+
+    Returns 0-indexed (home_goals, away_goals); the grid's shape sets the
+    max representable score.
+    """
+    rows, cols = grid.shape
+    home_axis = np.arange(rows)
+    away_axis = np.arange(cols)
+    e_home = float((grid.sum(axis=1) * home_axis).sum())
+    e_away = float((grid.sum(axis=0) * away_axis).sum())
+    return int(round(e_home)), int(round(e_away))
+
+
+def modal_scoreline_label(modal_h: int, modal_a: int, home: str, away: str,
+                          *, top1_h: int | None = None,
+                          top1_a: int | None = None,
+                          top1_p: float | None = None) -> tuple[str, str]:
+    """Two-line label for the viewer headline (DD3).
+
+    Returns (bold_line, explainer_line). The explainer references the
+    top-1 argmax + its probability when supplied — the audit expander
+    keeps the same top-5 list, but the headline now uses the modal
+    posterior mean instead.
+    """
+    bold = f"{home} **{modal_h}–{modal_a}** {away}"
+    if top1_h is None or top1_a is None or top1_p is None:
+        explainer = "Average outcome by goals model (E[goals] rounded)."
+    else:
+        explainer = (
+            f"Average outcome by goals model. The most-likely single score "
+            f"({top1_h}–{top1_a}, {top1_p:.0%}) is in the audit."
+        )
+    return bold, explainer

@@ -6,11 +6,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from fifapreds.publish.board import (
     is_stale,
+    modal_scoreline_from_grid,
+    modal_scoreline_label,
     next_nightly_utc,
     pooled_confidence_bin,
     track_of,
@@ -114,3 +117,57 @@ def test_verdict_calibration_filter_skipped_when_column_absent():
     assert "calibration" not in cal.columns
     sentence = verdict_sentence(cal, "backtest", calibration_track="isotonic")
     assert sentence is not None and "68%" in sentence
+
+
+# ----------------------------------------------- Item 11: modal scoreline
+
+def _delta_grid(rows: int, cols: int, h: int, a: int) -> np.ndarray:
+    grid = np.zeros((rows, cols))
+    grid[h, a] = 1.0
+    return grid
+
+
+def test_modal_scoreline_on_point_mass():
+    """Pure point mass at (2, 1): E[h]=2, E[a]=1 → modal = (2, 1)."""
+    grid = _delta_grid(5, 5, 2, 1)
+    assert modal_scoreline_from_grid(grid) == (2, 1)
+
+
+def test_modal_scoreline_rounds_mean_not_argmax():
+    """Half mass on (0, 0), half on (4, 2): argmax is tied at first cell,
+    but the modal-by-mean is (2, 1) — the rounded posterior mean. This
+    is the property that makes modal useful where argmax is invariant."""
+    grid = np.zeros((5, 5))
+    grid[0, 0] = 0.5
+    grid[4, 2] = 0.5
+    assert modal_scoreline_from_grid(grid) == (2, 1)
+
+
+def test_modal_scoreline_on_dixoncoles_shaped_grid():
+    """Synthetic DC-shaped grid centred on 1.3 home goals / 0.9 away
+    goals; rounded mean should land on (1, 1)."""
+    rng = np.random.default_rng(0)
+    grid = np.zeros((6, 6))
+    for h in range(6):
+        for a in range(6):
+            # Tail toward (1.3, 0.9).
+            grid[h, a] = np.exp(-((h - 1.3) ** 2 + (a - 0.9) ** 2))
+    grid = grid / grid.sum()
+    assert modal_scoreline_from_grid(grid) == (1, 1)
+
+
+def test_modal_scoreline_label_two_lines_with_audit_reference():
+    bold, explainer = modal_scoreline_label(
+        modal_h=1, modal_a=1, home="Argentina", away="Algeria",
+        top1_h=1, top1_a=0, top1_p=0.18,
+    )
+    assert bold == "Argentina **1–1** Algeria"
+    assert "(1–0, 18%)" in explainer
+    assert "audit" in explainer
+
+
+def test_modal_scoreline_label_drops_audit_clause_when_no_top1():
+    bold, explainer = modal_scoreline_label(0, 0, "A", "B")
+    assert bold == "A **0–0** B"
+    assert "audit" not in explainer
+    assert "E[goals]" in explainer
