@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-06-18T10:55:11.943183+00:00",
-  "code_version": "c185a29",
+  "generated_at": "2026-06-19T10:21:49.178130+00:00",
+  "code_version": "aac5344",
   "data_through": "2026-06-17",
   "counts": {
-    "upcoming": 288,
+    "upcoming": 328,
     "leaderboard": 12,
     "scored": 868,
     "calibration": 80,
@@ -11,10 +11,10 @@
     "disagreement": 45,
     "leaderboard_bands": 8,
     "qualification": 192,
-    "tournament": 96,
+    "tournament": 144,
     "scoreline_leaderboard": 2,
     "scoreline_calibration": 40,
-    "scoreline_topn": 96
+    "scoreline_topn": 136
   },
   "models": [
     "dixon_coles",
@@ -22,6 +22,7 @@
     "elo_baseline",
     "elo_decay",
     "elo_importance",
+    "hierarchical_poisson",
     "market_blend"
   ],
   "notes": []
