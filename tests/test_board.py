@@ -171,3 +171,91 @@ def test_modal_scoreline_label_drops_audit_clause_when_no_top1():
     assert bold == "A **0–0** B"
     assert "audit" not in explainer
     assert "E[goals]" in explainer
+
+
+# ----------------------------------------------- DD4: divergence banner
+
+def _cal_bin(track: str, calibration: str, bin_lo: float, bin_hi: float,
+             p_mean: float, freq: float, n: int, ci_lo: float, ci_hi: float):
+    return {"model_id": "m", "track": track, "calibration": calibration,
+            "bin_lo": bin_lo, "bin_hi": bin_hi, "n": n,
+            "p_mean": p_mean, "freq": freq, "ci_lo": ci_lo, "ci_hi": ci_hi}
+
+
+def _df(rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame(rows)
+
+
+def _banner(**kw):
+    """Convenience: invoke divergence_banner with the standard DD4 args."""
+    from fifapreds.publish.board import divergence_banner
+    return divergence_banner(
+        kw.pop("cal"),
+        calibration_track=kw.pop("calibration_track", "isotonic"),
+        weights_refit_date="2026-06-19",
+        **kw,
+    )
+
+
+def test_divergence_banner_silent_when_no_divergence():
+    """Claimed probability sits inside the Wilson interval — no banner."""
+    cal = _df([_cal_bin("live", "isotonic", 0.2, 0.3, p_mean=0.25,
+                        freq=0.27, n=40, ci_lo=0.18, ci_hi=0.40)])
+    assert _banner(cal=cal) is None
+
+
+def test_divergence_banner_fires_when_claim_below_wilson_lower():
+    """Claim of 23% but live observed 41% with ci_lo 0.30 — claim sits
+    below the lower bound, the bin is statistically miscalibrated."""
+    cal = _df([_cal_bin("live", "isotonic", 0.2, 0.3, p_mean=0.23,
+                        freq=0.41, n=40, ci_lo=0.30, ci_hi=0.55)])
+    msg = _banner(cal=cal)
+    assert msg is not None
+    assert "20%–30%" in msg
+    assert "claimed 23%" in msg and "observed 41%" in msg
+    assert "2026-06-19" in msg
+
+
+def test_divergence_banner_fires_when_claim_above_wilson_upper():
+    cal = _df([_cal_bin("live", "isotonic", 0.7, 0.8, p_mean=0.78,
+                        freq=0.40, n=35, ci_lo=0.25, ci_hi=0.55)])
+    msg = _banner(cal=cal)
+    assert msg is not None
+    assert "70%–80%" in msg
+
+
+def test_divergence_banner_picks_worst_bin_when_multiple_diverge():
+    """Two divergent bins: surface the one with the larger |freq − p_mean|."""
+    cal = _df([
+        _cal_bin("live", "isotonic", 0.2, 0.3, p_mean=0.25, freq=0.40,
+                 n=40, ci_lo=0.30, ci_hi=0.55),  # gap 0.15
+        _cal_bin("live", "isotonic", 0.5, 0.6, p_mean=0.55, freq=0.85,
+                 n=30, ci_lo=0.70, ci_hi=0.95),  # gap 0.30 — worst
+    ])
+    msg = _banner(cal=cal)
+    assert msg is not None
+    assert "50%–60%" in msg, msg
+
+
+def test_divergence_banner_ignores_other_calibration_track():
+    """A diverging RAW bin must NOT fire when the user is on isotonic."""
+    cal = _df([_cal_bin("live", "raw", 0.2, 0.3, p_mean=0.23,
+                        freq=0.50, n=40, ci_lo=0.35, ci_hi=0.65)])
+    assert _banner(cal=cal, calibration_track="isotonic") is None
+    assert _banner(cal=cal, calibration_track="raw") is not None
+
+
+def test_divergence_banner_ignores_thin_bins():
+    """Below MIN_VERDICT_N=20 claims, Wilson interval is too wide to be
+    meaningful — no banner even if claim is outside it."""
+    cal = _df([_cal_bin("live", "isotonic", 0.2, 0.3, p_mean=0.23,
+                        freq=0.80, n=5, ci_lo=0.40, ci_hi=0.97)])
+    assert _banner(cal=cal) is None
+
+
+def test_divergence_banner_handles_missing_calibration_column():
+    """Pre-Phase-4 artifact — column absent → banner is a silent no-op."""
+    cal = _df([{"model_id": "m", "track": "live", "bin_lo": 0.2,
+                "bin_hi": 0.3, "p_mean": 0.23, "freq": 0.80, "n": 40,
+                "ci_lo": 0.50, "ci_hi": 0.95}])
+    assert _banner(cal=cal) is None

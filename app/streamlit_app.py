@@ -25,11 +25,17 @@ from fifapreds.publish.board import (
     DEFAULT_CALIBRATION,
     DIM_BIN_N,
     UNIFORM_LOG_LOSS,
+    divergence_banner,
     is_stale,
     next_nightly_utc,
     track_of,
     verdict_sentence,
 )
+
+# DD4: weights are frozen at the start of WC2026. The banner cites this date
+# verbatim so the user knows what the frozen baseline actually is. Update
+# when LOTO calibrators are refit after a future tournament.
+WEIGHTS_REFIT_DATE = "2026-06-19"
 
 # DD2: track toggle is anchored to "isotonic" by default — the canonical
 # calibrated view per D2. Falls back to "raw" if the artifact predates
@@ -148,6 +154,14 @@ if calibration is None:
     st.info("The calibration record appears once predictions have been graded. "
             + REBUILD_HINT)
 else:
+    # DD4: mid-tournament divergence indicator. Only fires when live freq
+    # escapes the Wilson interval around the calibrated p_mean — most days
+    # this is silent, which is the point.
+    banner = divergence_banner(calibration,
+                               calibration_track=cal_track,
+                               weights_refit_date=WEIGHTS_REFIT_DATE)
+    if banner is not None:
+        st.warning(banner)
     # Verdict sentences (computed, never hardcoded — D3); now filtered by
     # the selected calibration track so swapping the toggle moves the verdict
     # without re-emitting any artifact.

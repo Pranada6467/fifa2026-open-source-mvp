@@ -136,3 +136,57 @@ def modal_scoreline_label(modal_h: int, modal_a: int, home: str, away: str,
             f"({top1_h}–{top1_a}, {top1_p:.0%}) is in the audit."
         )
     return bold, explainer
+
+
+# ------------------------------------------------- DD4: mid-tournament divergence
+
+def divergence_banner(
+    calibration: pd.DataFrame,
+    *,
+    calibration_track: str,
+    weights_refit_date: str,
+    track: str = "live",
+    min_bin_n: int = MIN_VERDICT_N,
+) -> str | None:
+    """Amber-banner copy when live-track frequency escapes the Wilson
+    interval around the claimed probability (D10 mid-tournament policy).
+
+    The check: for each populated bin of (track, calibration_track),
+    test whether `p_mean` (the claimed probability) lies outside
+    `[ci_lo, ci_hi]` (the Wilson interval on the observed `freq`).
+    When it does, the bin is statistically distinguishable from honest
+    calibration at the observed sample size — the frozen calibrator
+    has drifted from live reality and the user should know.
+
+    Returns None when there's no divergence or insufficient data; an
+    amber-friendly string otherwise. The string names the worst bin so
+    the banner stays concrete: "in the 0.2–0.3 bin (claimed 23%,
+    observed 41%)" rather than a vague "calibration looks off"."""
+    if (calibration is None or calibration.empty
+            or "calibration" not in calibration.columns):
+        return None
+    sub = calibration[
+        (calibration["track"] == track)
+        & (calibration["calibration"] == calibration_track)
+        & calibration["p_mean"].notna()
+        & (calibration["n"] >= min_bin_n)
+    ]
+    if sub.empty:
+        return None
+    # Divergence per bin: claimed sits outside the Wilson interval on freq.
+    outside_lo = sub["p_mean"] < sub["ci_lo"]
+    outside_hi = sub["p_mean"] > sub["ci_hi"]
+    divergent = sub[outside_lo | outside_hi]
+    if divergent.empty:
+        return None
+    # Worst = largest absolute gap between claim and observation.
+    worst = divergent.assign(
+        gap=lambda d: (d["freq"] - d["p_mean"]).abs(),
+    ).sort_values("gap", ascending=False).iloc[0]
+    return (
+        f"Live observation diverges from frozen weights in the "
+        f"{worst['bin_lo']:.0%}–{worst['bin_hi']:.0%} bin "
+        f"(claimed {worst['p_mean']:.0%}, observed {worst['freq']:.0%}, "
+        f"Wilson interval excluded). Weights last refit {weights_refit_date} — "
+        f"refresh after WC2026 ends."
+    )
