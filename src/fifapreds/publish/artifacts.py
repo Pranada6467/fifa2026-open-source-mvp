@@ -41,15 +41,19 @@ import numpy as np
 import pandas as pd
 
 from fifapreds.asof import MatchStore
+from fifapreds.calibration import apply_calibrators, fit_calibrators
 from fifapreds.config import PROJECT_ROOT
 from fifapreds.db import DB_PATH
 from fifapreds.loop.predict import code_version, load_grid
 from fifapreds.loop.score import (
     CLASSES,
     binary_calibration_table,
+    brier,
     btts_from_grid,
     calibration_table,
+    log_loss,
     ou25_from_grid,
+    rps,
     top_k_scorelines,
 )
 from fifapreds.publish.board import track_of
@@ -58,6 +62,12 @@ ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
 BACKTEST_DB = PROJECT_ROOT / "data" / "backtest.db"
 TOURNAMENT_SRC = PROJECT_ROOT / "data" / "tournament_sim.parquet"
 QUALIFICATION_SRC = PROJECT_ROOT / "data" / "qualification_backtest.parquet"
+
+# D2 + DD2: the recalibration dimension on the published leaderboard.
+# Named distinctly from the existing E2 `track ∈ {backtest, live}` column
+# on calibration.parquet so the two dimensions never collide.
+CALIBRATION_COL = "calibration"
+RAW_CALIBRATION = "raw"
 
 _PRED_COLS = ["prediction_id", "context", "match_id", "home_team", "away_team",
               "kickoff_ts", "neutral", "tournament", "p_home", "p_draw", "p_away",
@@ -95,6 +105,119 @@ def _concat(frames: list[pd.DataFrame | None], columns: list[str]) -> pd.DataFra
 
 
 _PROB_COLS = ["p_home", "p_draw", "p_away"]
+
+
+def _build_leaderboard_with_calibration(
+    scored: pd.DataFrame,
+    calibrators: dict,
+) -> pd.DataFrame:
+    """Aggregate log_loss/brier/rps per (model_id, context, calibration).
+
+    Always emits the `raw` calibration track using the score-time metrics
+    already in `scored` (no recomputation needed — those numbers ARE the
+    audit log). For each available calibrator, applies it to (p_home,
+    p_draw, p_away), recomputes metrics on the calibrated probabilities,
+    and emits a row under that calibration track.
+
+    Models without a calibrator (e.g. brand-new live entrants with no
+    backtest history yet) appear only in the raw track. The viewer's
+    track toggle (DD2) shows raw as fallback for those.
+    """
+    if scored.empty:
+        return pd.DataFrame(columns=[
+            "model_id", "context", CALIBRATION_COL, "n",
+            "log_loss", "brier", "rps",
+        ])
+
+    rows: list[pd.DataFrame] = []
+    raw = (
+        scored.groupby(["model_id", "context"], as_index=False)
+        .agg(n=("log_loss", "size"),
+             log_loss=("log_loss", "mean"),
+             brier=("brier", "mean"),
+             rps=("rps", "mean"))
+    )
+    raw[CALIBRATION_COL] = RAW_CALIBRATION
+    rows.append(raw)
+
+    tracks = sorted({track for _, track in calibrators})
+    for track in tracks:
+        per_track: list[pd.DataFrame] = []
+        for model_id, group in scored.groupby("model_id", sort=False):
+            cal = calibrators.get((model_id, track))
+            if cal is None:
+                continue
+            probs = group[_PROB_COLS].to_numpy()
+            calibrated = cal.apply(probs)
+            outcomes = group["outcome"].map(CLASSES.index).to_numpy()
+            losses = log_loss(calibrated, outcomes)
+            briers = brier(calibrated, outcomes)
+            rpss = rps(calibrated, outcomes)
+            g = group[["model_id", "context"]].copy()
+            g["_log_loss"] = losses
+            g["_brier"] = briers
+            g["_rps"] = rpss
+            per_track.append(g)
+        if not per_track:
+            continue
+        cal_rows = (
+            pd.concat(per_track, ignore_index=True)
+            .groupby(["model_id", "context"], as_index=False)
+            .agg(n=("_log_loss", "size"),
+                 log_loss=("_log_loss", "mean"),
+                 brier=("_brier", "mean"),
+                 rps=("_rps", "mean"))
+        )
+        cal_rows[CALIBRATION_COL] = track
+        rows.append(cal_rows)
+
+    return (
+        pd.concat(rows, ignore_index=True)
+        .sort_values(["context", CALIBRATION_COL, "log_loss"])
+        .reset_index(drop=True)
+    )
+
+
+def _build_calibration_table(
+    scored: pd.DataFrame,
+    calibrators: dict,
+) -> pd.DataFrame:
+    """Reliability table per (model_id, track, calibration).
+
+    The existing `track ∈ {backtest, live}` split stays — that's the
+    board's two-track story (proof vs demonstration). The new
+    `calibration ∈ {raw, temperature, isotonic}` dimension lets the
+    hero toggle (DD2) switch the underlying reliability points without
+    re-fitting at view time.
+    """
+    if scored.empty:
+        return pd.DataFrame(columns=[
+            "model_id", "track", CALIBRATION_COL,
+            "bin_lo", "bin_hi", "n", "p_mean", "freq", "ci_lo", "ci_hi",
+        ])
+
+    by_track = scored.assign(track=scored["context"].map(track_of))
+    rows: list[pd.DataFrame] = []
+    cal_tracks = sorted({track for _, track in calibrators}) + [RAW_CALIBRATION]
+
+    for (model_id, track), grp in by_track.groupby(["model_id", "track"]):
+        raw_probs = grp[_PROB_COLS].to_numpy()
+        outcomes = grp["outcome"].map(CLASSES.index).to_numpy()
+        for cal_track in cal_tracks:
+            if cal_track == RAW_CALIBRATION:
+                probs = raw_probs
+            else:
+                cal = calibrators.get((model_id, cal_track))
+                if cal is None:
+                    continue
+                probs = cal.apply(raw_probs)
+            table = calibration_table(probs, outcomes)
+            table.insert(0, "model_id", model_id)
+            table.insert(1, "track", track)
+            table.insert(2, CALIBRATION_COL, cal_track)
+            rows.append(table)
+
+    return pd.concat(rows, ignore_index=True)
 
 
 def _consensus(group: pd.DataFrame) -> tuple[pd.Series, str]:
@@ -298,33 +421,33 @@ def build(
     scoreline_topn = _scoreline_topn(upcoming, live_db)
     scoreline_topn.to_parquet(out / "scoreline_topn.parquet", index=False)
 
-    leaderboard = _concat([_read(live_db, _LEADERBOARD_SQL), _read(backtest_db, _LEADERBOARD_SQL)],
-                          ["model_id", "context", "n", "log_loss", "brier", "rps"])
-    leaderboard.to_parquet(out / "leaderboard.parquet", index=False)
-
     scored = _concat([_read(live_db, _SCORED_SQL), _read(backtest_db, _SCORED_SQL)],
                      ["context", "match_id", "home_team", "away_team", "kickoff_ts",
                       "tournament", "p_home", "p_draw", "p_away", "model_id",
                       "outcome", "log_loss", "brier", "rps", "scored_at"])
     scored.to_parquet(out / "scored.parquet", index=False)
 
-    # Calibration: pooled over every graded prediction, per model x track —
-    # the board's two-track story (backtest = proof, live = demo) needs the
-    # split at export time, not viewer-side guessing.
-    tables = []
-    if not scored.empty:
-        by_track = scored.assign(track=scored["context"].map(track_of))
-        for (model_id, track), grp in by_track.groupby(["model_id", "track"]):
-            table = calibration_table(
-                grp[["p_home", "p_draw", "p_away"]].to_numpy(),
-                grp["outcome"].map(CLASSES.index).to_numpy(),
-            )
-            table.insert(0, "model_id", model_id)
-            table.insert(1, "track", track)
-            tables.append(table)
-    calibration = _concat(
-        tables, ["model_id", "track", "bin_lo", "bin_hi", "n", "p_mean", "freq",
-                 "ci_lo", "ci_hi"])
+    # Phase 4: fit LOTO calibrators on backtest predictions (D6). The pipeline
+    # raises ValueError when fewer than 2 tournaments are available — caught
+    # here so the publisher degrades to raw-only rather than failing the
+    # whole nightly. Per D5, any per-calibrator failure during fit propagates
+    # up and surfaces as a publish-time error (loud, not silent).
+    calibrators: dict = {}
+    if Path(backtest_db).exists():
+        with sqlite3.connect(backtest_db) as bt_conn:
+            try:
+                calibrators = fit_calibrators(bt_conn)
+            except ValueError as exc:
+                notes.append(f"calibrators: skipped ({exc})")
+
+    leaderboard = _build_leaderboard_with_calibration(scored, calibrators)
+    leaderboard.to_parquet(out / "leaderboard.parquet", index=False)
+
+    # Calibration reliability table: per (model_id, track, calibration), the
+    # board's narrative needs both the existing two-track (backtest|live) split
+    # AND the new recalibration dimension so the hero's track toggle (DD2)
+    # has data to switch between.
+    calibration = _build_calibration_table(scored, calibrators)
     calibration.to_parquet(out / "calibration.parquet", index=False)
 
     # E2 narrative panels: surprises (graded live matches) + market disagreement.
