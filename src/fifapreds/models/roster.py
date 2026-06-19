@@ -104,6 +104,26 @@ class DixonColesSlowXi(DixonColes):
         super().__init__(**overrides)
 
 
+class DixonColesTournamentWeighted(DixonColes):
+    """DixonColes + tournament-stage weighting on the xi decay (S1).
+
+    Hypothesis: high-stakes matches (World Cup, continental finals) carry
+    sharper signal than friendlies (rotated squads, no pressure). Multiplying
+    the xi-decay weights by `TOURNAMENT_IMPORTANCE` lifts what matters and
+    damps the noise — symmetric to `EloImportance`'s K-factor uplift, just
+    inside the Poisson goal model. Decision gate (D11-A): ships only when
+    LOTO pooled log-loss beats base DC by > 1 bootstrap SE; otherwise the
+    entrant is dropped from `default_roster` before merge."""
+
+    model_id = "dixon_coles_tournament_weighted"
+    model_version = "1"
+
+    def __init__(self, **overrides: Any):
+        # Copy the frozen constant so instances never share mutable state.
+        overrides.setdefault("importance", dict(TOURNAMENT_IMPORTANCE))
+        super().__init__(**overrides)
+
+
 if _HAS_PYMC:
     class HierarchicalPoisson(_HP):
         """Bayesian hierarchical Poisson with confederation partial pooling.

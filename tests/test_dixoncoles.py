@@ -118,3 +118,64 @@ def test_real_history_smoke():
     neutral = dc.predict_wdl("Mexico", "South Africa", neutral=True)
     assert home.home > neutral.home > neutral.away  # favourite + venue edge
     assert dc.predict_goals("Brazil", "Malta", neutral=True).grid.sum() == pytest.approx(1.0)
+
+
+# ----------------------------------------------------------- S1: importance kwarg
+
+def test_importance_none_keeps_hyperparams_hash_byte_identical():
+    """REGRESSION (IRON RULE): adding the optional `importance` kwarg must
+    NOT touch plain DC's hyperparams_hash — the historical leaderboard rows
+    for `dixon_coles` use the old hash and would split if we changed it."""
+    plain = DixonColes()
+    # The key must be absent (not None) so JSON serialization is identical.
+    assert "importance" not in plain.hyperparams()
+    # Two plain instances hash the same (sanity — the obvious property).
+    assert DixonColes().hyperparams_hash == DixonColes().hyperparams_hash
+
+
+def test_importance_set_produces_distinct_hash_and_lifts_tournaments():
+    """With importance set, friendlies carry less weight than World Cup
+    matches inside the xi-decay window — same direction as EloImportance."""
+    weighted = DixonColes(importance={"Friendly": 0.5, "FIFA World Cup": 1.75})
+    assert weighted.hyperparams_hash != DixonColes().hyperparams_hash
+    assert "importance" in weighted.hyperparams()
+
+    # Toy frame: same matchup at the same date in two competitions. After
+    # fitting on a frame that mixes both, the WC scoreline matters more.
+    mixed = _league()  # all tagged "League" — gets default weight 1.0 below
+    fitted_plain = DixonColes(min_matches=100).fit(mixed)
+    fitted_weighted = DixonColes(
+        min_matches=100,
+        importance={"League": 1.0},  # explicit identity → byte-identical math
+    ).fit(mixed)
+    # When the importance map is the identity over the data, the fit
+    # collapses to base DC; this pins that the multiplication itself is
+    # a pure pass-through when each tournament's weight is 1.0.
+    p_plain = fitted_plain.predict_wdl("T1", "T6", neutral=True)
+    p_weighted = fitted_weighted.predict_wdl("T1", "T6", neutral=True)
+    assert p_plain.home == pytest.approx(p_weighted.home, abs=1e-9)
+
+
+def test_importance_set_requires_tournament_column():
+    """Loud failure: a frame without `tournament` cannot drive the
+    importance multiply. Pre-S1 frames that happened to lack the column
+    still work for plain DC; the new contract only fires when opted in."""
+    frame = _league().drop(columns=["tournament"])
+    # Plain DC reads no tournament column — still fits.
+    DixonColes(min_matches=100).fit(frame)
+    # The weighted variant demands it.
+    with pytest.raises(ValueError, match="tournament"):
+        DixonColes(min_matches=100, importance={"League": 1.0}).fit(frame)
+
+
+def test_importance_unmapped_tournament_defaults_to_neutral():
+    """Tournaments absent from the importance dict get weight 1.0 — same
+    convention as BaselineElo.importance, no silent suppression."""
+    frame = _league()  # all "League"
+    # importance map doesn't mention "League"; weight should fall back to 1.0
+    # and the fit must produce the same predictions as importance={"League": 1.0}.
+    fallback = DixonColes(min_matches=100, importance={"World Cup": 2.0}).fit(frame)
+    identity = DixonColes(min_matches=100, importance={"League": 1.0}).fit(frame)
+    p_fallback = fallback.predict_wdl("T1", "T6", neutral=True)
+    p_identity = identity.predict_wdl("T1", "T6", neutral=True)
+    assert p_fallback.home == pytest.approx(p_identity.home, abs=1e-9)

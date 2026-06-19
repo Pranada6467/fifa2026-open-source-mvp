@@ -33,6 +33,10 @@ from fifapreds.models.base import WDL, GoalsModel, ScoreGrid
 
 _REQUIRED_COLS = ("date", "home_team", "away_team", "home_score", "away_score",
                   "neutral", "went_to_et")
+# When `importance` is set the fit additionally requires the "tournament"
+# column (BaselineElo's tournament-weighted update does the same). Base DC
+# never reads this column, so the requirement stays opt-in.
+_IMPORTANCE_REQUIRED_COLS = ("tournament",)
 
 
 class DixonColes(GoalsModel):
@@ -47,12 +51,17 @@ class DixonColes(GoalsModel):
         et_weight: float = 0.0,
         max_goals: int = 15,
         min_matches: int = 500,
+        importance: dict[str, float] | None = None,
     ):
         self.window_years = window_years
         self.xi = xi
         self.et_weight = et_weight
         self.max_goals = max_goals
         self.min_matches = min_matches
+        # S1: when set, multiplies xi-decay weights by tournament importance
+        # (same dict shape as BaselineElo's `importance`). None == off, math
+        # is byte-identical to the base — existing golden tests pin that.
+        self.importance = importance
         self._pb: DixonColesGoalModel | None = None
         self._teams: set[str] = set()
         self.trained_through: pd.Timestamp | None = None
@@ -60,19 +69,26 @@ class DixonColes(GoalsModel):
         self.n_training_matches: int = 0
 
     def hyperparams(self) -> dict[str, Any]:
-        return {
+        hp: dict[str, Any] = {
             "window_years": self.window_years,
             "xi": self.xi,
             "et_weight": self.et_weight,
             "max_goals": self.max_goals,
             "min_matches": self.min_matches,
         }
+        # S1: only include `importance` in the hash when set, so plain DC's
+        # hyperparams_hash stays byte-identical to pre-S1 rows. Subclasses
+        # that opt into tournament weighting get their own distinct hash.
+        if self.importance is not None:
+            hp["importance"] = self.importance
+        return hp
 
     # ---------------------------------------------------------------- train
 
     def fit(self, matches: pd.DataFrame) -> "DixonColes":
         """Batch MLE refit on a trailing window of the as-of frame."""
-        missing = [c for c in _REQUIRED_COLS if c not in matches.columns]
+        required = _REQUIRED_COLS + (_IMPORTANCE_REQUIRED_COLS if self.importance else ())
+        missing = [c for c in required if c not in matches.columns]
         if missing:
             raise ValueError(f"matches frame missing columns: {missing}")
         if matches["home_score"].isna().any() or matches["away_score"].isna().any():
@@ -141,7 +157,12 @@ class DixonColes(GoalsModel):
             if self.xi > 0.0
             else np.ones(len(subset))
         )
-        return np.asarray(w, dtype=float) * np.where(subset["went_to_et"], self.et_weight, 1.0)
+        w = np.asarray(w, dtype=float) * np.where(subset["went_to_et"], self.et_weight, 1.0)
+        if self.importance is not None:
+            # Tournament-stage uplift (S1): WC matches outweigh friendlies, etc.
+            # Unmapped tournaments default to 1.0 — neutral, no surprise.
+            w = w * subset["tournament"].map(self.importance).fillna(1.0).to_numpy(dtype=float)
+        return w
 
     # -------------------------------------------------------------- predict
 
