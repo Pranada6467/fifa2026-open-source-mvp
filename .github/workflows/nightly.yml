@@ -42,7 +42,10 @@ jobs:
           cache: pip
 
       - name: Install
-        run: python -m pip install -e .
+        # [bayesian] pulls in pymc + nutpie so HierarchicalPoisson (E3) joins
+        # the roster on CI. Per-model 5-min timeout in _fit_roster guards the
+        # nightly budget against a slow sampler.
+        run: python -m pip install -e ".[bayesian]"
 
       - name: Run the live loop (violations gate — exit 2 turns this red)
         run: python -m fifapreds.orchestrate

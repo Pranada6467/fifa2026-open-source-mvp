@@ -29,9 +29,11 @@ identical simulations, and the seed is recorded in the sim meta either way.
 """
 from __future__ import annotations
 
+import signal
 import sqlite3
 import ssl
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -48,6 +50,13 @@ MARTJ42_BASE = (
 )
 RAW_FILES = ("results.csv", "shootouts.csv")
 TOURNAMENT_SIM_PARQUET = PROJECT_ROOT / "data" / "tournament_sim.parquet"
+
+# Per-model fit timeout (D4). PyMC's hierarchical sampler can hang or run
+# long on CI's slower hardware; capping each fit at 5 min guarantees that one
+# slow model costs one entrant, never the whole nightly budget.
+FIT_TIMEOUT_SECONDS = 300
+
+_HAS_SIGALRM = hasattr(signal, "SIGALRM")  # False on Windows; we don't ship there
 
 
 def fetch_raw(raw_dir: Path | None = None) -> list[str]:
@@ -105,12 +114,44 @@ def _fit_failure_exceptions() -> tuple[type[Exception], ...]:
     return tuple(excs)
 
 
-def _fit_roster(roster: list[Model], played: pd.DataFrame) -> tuple[list[Model], list[str]]:
+@contextmanager
+def _fit_timeout(seconds: int):
+    """Raise TimeoutError if the with-block doesn't return in `seconds`.
+
+    SIGALRM-based, so Unix-only — the orchestrator runs on Linux CI and macOS
+    dev. On Windows the alarm is a no-op (the CI job's outer `timeout-minutes`
+    is the only guard there). Not reentrant: only one SIGALRM per process.
+    """
+    if not _HAS_SIGALRM:
+        yield
+        return
+
+    def _handler(signum, frame):
+        raise TimeoutError(f"fit exceeded {seconds}s")
+
+    prev = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prev)
+
+
+def _fit_roster(
+    roster: list[Model],
+    played: pd.DataFrame,
+    *,
+    timeout_s: int = FIT_TIMEOUT_SECONDS,
+) -> tuple[list[Model], list[str]]:
     fitted, notes = [], []
     failures = _fit_failure_exceptions()
     for model in roster:
         try:
-            fitted.append(model.fit(played))
+            with _fit_timeout(timeout_s):
+                fitted.append(model.fit(played))
+        except TimeoutError as exc:
+            notes.append(f"{model.model_id}: fit timed out, dropped ({exc})")
         except failures as exc:
             notes.append(f"{model.model_id}: fit failed, dropped ({exc})")
     return fitted, notes

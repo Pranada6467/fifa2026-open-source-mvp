@@ -6,13 +6,16 @@ joins when an odds snapshot exists (and carries its snapshot id into the
 predictions log), the Monte Carlo writes tournament odds, and the publisher
 exports every artifact. No network, no real DBs.
 
-Plus the unattended-operation guarantees (E1/T2): a failing fit drops that
-entrant instead of crashing the loop, and integrity violations turn into a
-non-zero exit code so the nightly Action goes red.
+Plus the unattended-operation guarantees (E1/T2/D4): a failing fit drops that
+entrant instead of crashing the loop, a fit exceeding the per-model timeout
+gets dropped the same way, and integrity violations turn into a non-zero exit
+code so the nightly Action goes red.
 """
 import json
+import signal
 import sqlite3
 import sys
+import time
 import types
 
 import numpy as np
@@ -22,7 +25,13 @@ import pytest
 from fifapreds.db import init_odds, init_predictions
 from fifapreds.loop.predict import log_prediction
 from fifapreds.models.elo import BaselineElo
-from fifapreds.orchestrate import _fit_failure_exceptions, _fit_roster, exit_code, run
+from fifapreds.orchestrate import (
+    _fit_failure_exceptions,
+    _fit_roster,
+    _fit_timeout,
+    exit_code,
+    run,
+)
 from tests.test_sim_montecarlo import GROUPS, TEAMS, FakeGoals, hierarchy, synthetic_fixtures
 
 
@@ -213,6 +222,48 @@ def test_fit_roster_drops_failing_entrants(world):
     assert [m.model_id for m in fitted] == ["elo_baseline"]
     assert len(notes) == 2
     assert all("exploding: fit failed, dropped" in n for n in notes)
+
+
+class SlowModel:
+    """Roster entrant whose fit sleeps past the timeout — must be dropped."""
+
+    model_id = "slow"
+
+    def __init__(self, sleep_s: float):
+        self._sleep_s = sleep_s
+
+    def fit(self, matches):
+        time.sleep(self._sleep_s)
+        return self
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"),
+                    reason="signal.SIGALRM is Unix-only; orchestrator runs on Linux CI / macOS dev.")
+def test_fit_roster_drops_on_timeout(world):
+    """D4: a fit exceeding the per-model timeout is dropped like any other
+    failed entrant, with a distinct 'timed out' note so the cause is visible."""
+    _, store, _ = world
+    roster = [BaselineElo(), SlowModel(sleep_s=3)]
+    fitted, notes = _fit_roster(roster, store.played, timeout_s=1)
+    assert [m.model_id for m in fitted] == ["elo_baseline"]
+    assert any("slow: fit timed out, dropped" in n for n in notes)
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGALRM"), reason="Unix-only")
+def test_fit_timeout_restores_prior_handler():
+    """The context manager must not leak its SIGALRM handler — a follow-on
+    fit (or any other code) gets the handler that was installed before."""
+
+    def sentinel(signum, frame):
+        pass
+
+    prev = signal.signal(signal.SIGALRM, sentinel)
+    try:
+        with _fit_timeout(60):
+            pass
+        assert signal.getsignal(signal.SIGALRM) is sentinel
+    finally:
+        signal.signal(signal.SIGALRM, prev)
 
 
 def test_fit_failures_pick_up_pymc_when_installed(monkeypatch):
