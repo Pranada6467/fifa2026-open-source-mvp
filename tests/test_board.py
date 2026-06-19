@@ -74,3 +74,43 @@ def test_is_stale_threshold():
 def test_track_of():
     assert track_of("live") == "live"
     assert track_of("backtest:wc2014") == "backtest"
+
+
+# ----------------------------------------------------- DD2: calibration filter
+
+def _multi_calibration(rows: list[tuple[str, str, float, float, int]]) -> pd.DataFrame:
+    """rows = [(track, calibration, p_mean, freq, n), ...] — Phase 4 shape."""
+    return pd.DataFrame([
+        {"model_id": "m", "track": t, "calibration": c, "bin_lo": 0.0,
+         "bin_hi": 1.0, "p_mean": p, "freq": f, "n": n}
+        for t, c, p, f, n in rows
+    ])
+
+
+def test_verdict_filters_by_calibration_track_when_column_present():
+    """Same track, two calibration variants — verdict must reflect the
+    selected one, not pool across them."""
+    cal = _multi_calibration([
+        ("backtest", "raw", 0.70, 0.55, 100),
+        ("backtest", "isotonic", 0.70, 0.68, 100),
+    ])
+    raw = verdict_sentence(cal, "backtest", calibration_track="raw")
+    iso = verdict_sentence(cal, "backtest", calibration_track="isotonic")
+    assert "55%" in raw and "68%" in iso
+    assert raw != iso  # the toggle must actually change the headline
+
+
+def test_verdict_calibration_filter_misses_emit_none():
+    cal = _multi_calibration([("backtest", "raw", 0.70, 0.68, 100)])
+    # No isotonic row exists; the toggle should yield None (no confident
+    # claims) rather than silently fall through to a different track.
+    assert verdict_sentence(cal, "backtest", calibration_track="isotonic") is None
+
+
+def test_verdict_calibration_filter_skipped_when_column_absent():
+    """Old artifact (pre-Phase 4, no `calibration` column): the filter is
+    a no-op so legacy data still renders a verdict."""
+    cal = _calibration("backtest", [(0.70, 0.68, 100)])
+    assert "calibration" not in cal.columns
+    sentence = verdict_sentence(cal, "backtest", calibration_track="isotonic")
+    assert sentence is not None and "68%" in sentence

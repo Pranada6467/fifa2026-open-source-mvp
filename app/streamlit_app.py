@@ -22,6 +22,7 @@ import pandas as pd
 import streamlit as st
 
 from fifapreds.publish.board import (
+    DEFAULT_CALIBRATION,
     DIM_BIN_N,
     UNIFORM_LOG_LOSS,
     is_stale,
@@ -29,6 +30,12 @@ from fifapreds.publish.board import (
     track_of,
     verdict_sentence,
 )
+
+# DD2: track toggle is anchored to "isotonic" by default — the canonical
+# calibrated view per D2. Falls back to "raw" if the artifact predates
+# Phase 4 (no `calibration` column).
+DEFAULT_TRACK_PILL = "isotonic"
+TRACK_PILL_ORDER = ("raw", "temperature", "isotonic")
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = Path(os.environ.get("FIFAPREDS_ARTIFACTS", ROOT / "artifacts"))
@@ -56,6 +63,14 @@ def load(name: str) -> pd.DataFrame | dict | None:
         return json.loads(path.read_text())
     df = _load_parquet(str(path), path.stat().st_mtime)
     return None if df.empty else df
+
+
+def _filter_calibration(df: pd.DataFrame, cal_track: str) -> pd.DataFrame:
+    """DD2: filter by calibration column if present; pass through otherwise.
+    Lets the same render code serve pre- and post-Phase-4 artifacts."""
+    if df is None or "calibration" not in df.columns:
+        return df
+    return df[df["calibration"] == cal_track]
 
 
 def odds(p: float) -> float:
@@ -102,13 +117,44 @@ st.header("Does 70% mean 70%?")
 calibration = load("calibration.parquet")
 leaderboard = load("leaderboard.parquet")
 
+# DD2: calibration-track toggle anchored above the verdict. The pill set is
+# constrained to the tracks actually present in the artifact, so a Phase-4
+# rollback (or a pre-Phase-4 artifact) gracefully degrades to whatever's
+# there instead of offering dead options.
+cal_track = DEFAULT_CALIBRATION
+if calibration is not None and "calibration" in calibration.columns:
+    present = [t for t in TRACK_PILL_ORDER if t in set(calibration["calibration"])]
+    if present:
+        default_idx = (present.index(DEFAULT_TRACK_PILL)
+                       if DEFAULT_TRACK_PILL in present else 0)
+        cal_track = st.radio(
+            "Calibration track",
+            present,
+            index=default_idx,
+            horizontal=True,
+            help="Raw = model claims pre-recalibration (the audit log). "
+                 "Temperature/isotonic = LOTO-tuned recalibration on the "
+                 "backtest; better numbers, smaller validation surface.",
+            key="cal_track_pill",
+        )
+        if cal_track != "raw":
+            st.caption(
+                f"_Experimental — `{cal_track}` calibrator fit via LOTO on "
+                "n≈64 holdout per fold (small validation surface; numbers "
+                "shift as more matches grade)._"
+            )
+
 if calibration is None:
     st.info("The calibration record appears once predictions have been graded. "
             + REBUILD_HINT)
 else:
-    # Verdict sentences (computed, never hardcoded — D3).
-    backtest_verdict = verdict_sentence(calibration, "backtest")
-    live_verdict = verdict_sentence(calibration, "live")
+    # Verdict sentences (computed, never hardcoded — D3); now filtered by
+    # the selected calibration track so swapping the toggle moves the verdict
+    # without re-emitting any artifact.
+    backtest_verdict = verdict_sentence(calibration, "backtest",
+                                        calibration_track=cal_track)
+    live_verdict = verdict_sentence(calibration, "live",
+                                    calibration_track=cal_track)
     if backtest_verdict:
         st.markdown(f"**{backtest_verdict}**")
     if live_verdict:
@@ -119,7 +165,8 @@ else:
 
     # Proof strip (D1): one wrapping line, stacks naturally on phones (D5).
     if leaderboard is not None:
-        lb = leaderboard.assign(track=leaderboard["context"].map(track_of))
+        lb_for_strip = _filter_calibration(leaderboard, cal_track)
+        lb = lb_for_strip.assign(track=lb_for_strip["context"].map(track_of))
         n_back = int(lb.loc[lb["track"] == "backtest", "n"].sum())
         n_live = int(lb.loc[lb["track"] == "live", "n"].sum())
         best_back = lb[lb["track"] == "backtest"]["log_loss"].min()
@@ -135,8 +182,10 @@ else:
         st.markdown(" · ".join(strip))
 
     # The reliability chart: solid = backtest, hollow = live (D4); thin bins
-    # (n < DIM_BIN_N) render dimmed — too few claims to judge (D2).
-    populated = calibration.dropna(subset=["p_mean"])
+    # (n < DIM_BIN_N) render dimmed — too few claims to judge (D2). DD2:
+    # filter to the selected calibration track so the toggle moves the points.
+    calibration_for_chart = _filter_calibration(calibration, cal_track)
+    populated = calibration_for_chart.dropna(subset=["p_mean"])
     populated = populated[populated["n"] > 0]
     diagonal = alt.Chart(pd.DataFrame({"p": [0.0, 1.0]})).mark_line(
         strokeDash=[4, 4], color=REF_C).encode(x="p", y="p")
@@ -185,7 +234,9 @@ if leaderboard is None:
     st.info("The leaderboard appears once predictions have been graded. "
             + REBUILD_HINT)
 else:
-    lb = leaderboard.assign(track=leaderboard["context"].map(track_of))
+    # DD2: leaderboard rows are also filtered by the hero's track toggle.
+    leaderboard_for_lb = _filter_calibration(leaderboard, cal_track)
+    lb = leaderboard_for_lb.assign(track=leaderboard_for_lb["context"].map(track_of))
     bands = load("leaderboard_bands.parquet")
     # Verdict caption: best by RPS per track, computed not asserted (D3).
     lines = []
