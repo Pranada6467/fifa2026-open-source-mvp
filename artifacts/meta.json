@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-06-19T11:06:58.903890+00:00",
-  "code_version": "d28d39e",
+  "generated_at": "2026-06-20T02:43:16.184258+00:00",
+  "code_version": "3c0d64c",
   "data_through": "2026-06-18",
   "counts": {
-    "upcoming": 304,
-    "leaderboard": 12,
+    "upcoming": 376,
+    "leaderboard": 28,
     "scored": 1012,
-    "calibration": 80,
+    "calibration": 160,
     "surprises": 33,
     "disagreement": 41,
     "leaderboard_bands": 8,
@@ -14,9 +14,11 @@
     "tournament": 144,
     "scoreline_leaderboard": 2,
     "scoreline_calibration": 40,
-    "scoreline_topn": 128
+    "scoreline_topn": 164
   },
   "models": [
+    "bma_ensemble",
+    "bma_goals_ensemble",
     "dixon_coles",
     "dixon_coles_slow_xi",
     "elo_baseline",
