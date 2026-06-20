@@ -140,6 +140,7 @@ def test_full_pipeline(world):
         sim_path=tmp_path / "tournament_sim.parquet",
         artifacts_dir=tmp_path / "artifacts",
         live_db=tmp_path / "live.db",
+        backtest_db=tmp_path / "no_backtest.db",
     )
 
     # SCORE: the old claim graded, nothing pending, no integrity violations.
@@ -191,6 +192,7 @@ def test_full_pipeline(world):
         sim_path=tmp_path / "tournament_sim.parquet",
         artifacts_dir=tmp_path / "artifacts",
         live_db=tmp_path / "live.db",
+        backtest_db=tmp_path / "no_backtest.db",
     )
     assert all(n == 0 for n in again["predicted"].values())
 
@@ -288,6 +290,7 @@ def test_loop_survives_sampler_failure(world):
         sim_path=tmp_path / "tournament_sim.parquet",
         artifacts_dir=tmp_path / "artifacts",
         live_db=tmp_path / "live.db",
+        backtest_db=tmp_path / "no_backtest.db",
     )
     assert report["models"] == ["fake_goals"]
     assert any("exploding: fit failed, dropped" in n for n in report["notes"])
@@ -300,6 +303,54 @@ def test_exit_code_gates_on_violations():
     assert exit_code({"violations": [7, 9]}) == 2
 
 
+def test_bma_entrants_join_when_backtest_history_exists(world):
+    """When a backtest DB exists with scored predictions for at least one
+    fitted roster member, BMAEnsemble (and BMAGoalsEnsemble where every
+    member is goals-capable) join the orchestrator's `entrants` list."""
+    conn, store, tmp_path = world
+
+    # Build a tiny backtest DB with two scored rows for the roster's models.
+    bt_path = tmp_path / "synthetic_backtest.db"
+    bt_conn = sqlite3.connect(bt_path)
+    init_predictions(bt_conn)
+    rows_p, rows_s = [], []
+    for pid, (model_id, year) in enumerate(
+        [("elo_baseline", 2018), ("elo_baseline", 2022),
+         ("fake_goals", 2018), ("fake_goals", 2022)], start=1):
+        rows_p.append((pid, f"backtest:wc{year}", year * 10 + pid,
+                       "H", "A", "2020-01-01", 1, "WC",
+                       0.45, 0.30, 0.25, model_id, "1", "abc", "h",
+                       "2010-01-01", None, None, "2010-01-02"))
+        rows_s.append((pid, "home", 0.0, 0.0, 0.0, "2020-01-02"))
+    bt_conn.executemany(
+        """INSERT INTO predictions
+           (prediction_id, context, match_id, home_team, away_team,
+            kickoff_ts, neutral, tournament, p_home, p_draw, p_away,
+            model_id, model_version, code_version, hyperparams_hash,
+            training_cutoff, odds_snapshot_id, seed, predicted_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows_p)
+    bt_conn.executemany(
+        "INSERT INTO scores (prediction_id, outcome, log_loss, brier, rps, scored_at)"
+        " VALUES (?,?,?,?,?,?)", rows_s)
+    bt_conn.commit()
+    bt_conn.close()
+
+    report = run(
+        conn, store,
+        [BaselineElo(), FakeGoals(hierarchy())],
+        n_sims=16, seed=2,
+        sim_path=tmp_path / "tournament_sim.parquet",
+        artifacts_dir=tmp_path / "artifacts",
+        live_db=tmp_path / "live.db",
+        backtest_db=bt_path,
+    )
+    assert "bma_ensemble" in report["models"]
+    assert "bma_goals_ensemble" in report["models"]
+    # Notes should describe the member list each BMA used.
+    assert any("bma_ensemble: over" in n for n in report["notes"])
+    assert any("bma_goals_ensemble: over" in n for n in report["notes"])
+
+
 def test_runs_without_odds_snapshot(world):
     conn, store, tmp_path = world
     report = run(
@@ -308,6 +359,7 @@ def test_runs_without_odds_snapshot(world):
         sim_path=tmp_path / "tournament_sim.parquet",
         artifacts_dir=tmp_path / "artifacts",
         live_db=tmp_path / "live.db",
+        backtest_db=tmp_path / "no_backtest.db",
     )
     assert report["models"] == ["fake_goals"]
     assert any("market_blend: skipped" in n for n in report["notes"])

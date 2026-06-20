@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 from fifapreds.config import PROJECT_ROOT
+from fifapreds.ensemble import BMAEnsemble, BMAGoalsEnsemble
 from fifapreds.models.base import GoalsModel, Model
 from fifapreds.models.market import MarketBlend, latest_h2h_probs
 from fifapreds.models.roster import default_roster
@@ -50,6 +51,7 @@ MARTJ42_BASE = (
 )
 RAW_FILES = ("results.csv", "shootouts.csv")
 TOURNAMENT_SIM_PARQUET = PROJECT_ROOT / "data" / "tournament_sim.parquet"
+BACKTEST_DB = PROJECT_ROOT / "data" / "backtest.db"
 
 # Per-model fit timeout (D4). PyMC's hierarchical sampler can hang or run
 # long on CI's slower hardware; capping each fit at 5 min guarantees that one
@@ -171,6 +173,53 @@ def _market_entrant(conn: sqlite3.Connection, fitted: list[Model]) -> tuple[Mode
     return blend, f"market_blend: over snapshot {snapshot_id} (base {base.model_id})"
 
 
+def _bma_entrants(fitted: list[Model],
+                  backtest_db: Path | str = BACKTEST_DB,
+                  ) -> tuple[list[Model], list[str]]:
+    """Construct BMAEnsemble + BMAGoalsEnsemble over the fitted roster.
+
+    Skips loudly with a note when the backtest DB is absent (the first
+    nightly after a fresh clone), unreadable, or has no history for any
+    member — same shape as `_market_entrant`. Per D5, the inner BMA
+    constructor itself raises on every-member-dead and on a non-goals
+    member in BMAGoalsEnsemble; those errors propagate up here as
+    structured notes rather than crashing the nightly.
+    """
+    notes: list[str] = []
+    entrants: list[Model] = []
+    if not Path(backtest_db).exists():
+        return entrants, [f"bma: skipped (no backtest at {backtest_db})"]
+    try:
+        conn = sqlite3.connect(backtest_db)
+    except sqlite3.Error as exc:
+        return entrants, [f"bma: skipped (backtest unreadable: {exc})"]
+
+    try:
+        try:
+            bma = BMAEnsemble(fitted, backtest_conn=conn)
+            entrants.append(bma)
+            notes.append(
+                f"bma_ensemble: over {len(bma._members)} members "
+                f"({', '.join(sorted(bma._weights))})"
+            )
+        except (RuntimeError, ValueError) as exc:
+            notes.append(f"bma_ensemble: skipped ({exc})")
+
+        goals_only = [m for m in fitted if isinstance(m, GoalsModel)]
+        try:
+            bma_g = BMAGoalsEnsemble(goals_only, backtest_conn=conn)
+            entrants.append(bma_g)
+            notes.append(
+                f"bma_goals_ensemble: over {len(bma_g._members)} goals members "
+                f"({', '.join(sorted(bma_g._weights))})"
+            )
+        except (RuntimeError, ValueError, TypeError) as exc:
+            notes.append(f"bma_goals_ensemble: skipped ({exc})")
+    finally:
+        conn.close()
+    return entrants, notes
+
+
 def run_simulations(
     fitted: list[Model],
     matches: pd.DataFrame,
@@ -213,6 +262,7 @@ def run(
     sim_path: Path | str = TOURNAMENT_SIM_PARQUET,
     artifacts_dir: Path | str | None = None,
     live_db: Path | str | None = None,
+    backtest_db: Path | str | None = BACKTEST_DB,
 ) -> dict:
     """SCORE -> UPDATE -> PREDICT -> SIMULATE -> PUBLISH over an open store.
 
@@ -245,7 +295,10 @@ def run(
     report["notes"] += fit_notes
     market, market_note = _market_entrant(conn, fitted)
     report["notes"].append(market_note)
-    entrants = fitted + ([market] if market is not None else [])
+    bma_entrants, bma_notes = _bma_entrants(
+        fitted, backtest_db=(backtest_db if backtest_db is not None else BACKTEST_DB))
+    report["notes"] += bma_notes
+    entrants = fitted + ([market] if market is not None else []) + bma_entrants
     report["models"] = [m.model_id for m in entrants]
 
     # PREDICT — idempotent per-fixture claims for the window.
