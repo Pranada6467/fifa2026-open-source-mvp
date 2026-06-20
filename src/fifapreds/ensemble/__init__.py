@@ -10,5 +10,11 @@ from fifapreds.ensemble.bma import (
     BMAGoalsEnsemble,
     loto_log_losses,
 )
+from fifapreds.ensemble.stacking import StackedEnsemble
 
-__all__ = ["BMAEnsemble", "BMAGoalsEnsemble", "loto_log_losses"]
+__all__ = [
+    "BMAEnsemble",
+    "BMAGoalsEnsemble",
+    "StackedEnsemble",
+    "loto_log_losses",
+]

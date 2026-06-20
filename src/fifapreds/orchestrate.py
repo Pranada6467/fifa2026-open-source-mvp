@@ -41,7 +41,7 @@ import numpy as np
 import pandas as pd
 
 from fifapreds.config import PROJECT_ROOT
-from fifapreds.ensemble import BMAEnsemble, BMAGoalsEnsemble
+from fifapreds.ensemble import BMAEnsemble, BMAGoalsEnsemble, StackedEnsemble
 from fifapreds.models.base import GoalsModel, Model
 from fifapreds.models.market import MarketBlend, latest_h2h_probs
 from fifapreds.models.roster import default_roster
@@ -52,6 +52,7 @@ MARTJ42_BASE = (
 RAW_FILES = ("results.csv", "shootouts.csv")
 TOURNAMENT_SIM_PARQUET = PROJECT_ROOT / "data" / "tournament_sim.parquet"
 BACKTEST_DB = PROJECT_ROOT / "data" / "backtest.db"
+STACKING_WEIGHTS = PROJECT_ROOT / "data" / "stacking_weights.json"
 
 # Per-model fit timeout (D4). PyMC's hierarchical sampler can hang or run
 # long on CI's slower hardware; capping each fit at 5 min guarantees that one
@@ -220,6 +221,24 @@ def _bma_entrants(fitted: list[Model],
     return entrants, notes
 
 
+def _stacked_entrant(fitted: list[Model],
+                     weights_path: Path | str = STACKING_WEIGHTS,
+                     ) -> tuple[Model | None, str]:
+    """StackedEnsemble (S19) over the fitted roster — opt-in via the
+    frozen weights file shipped by `scripts/train_stacker.py`.
+
+    Absent weights = the gate (D11-A) hasn't passed yet OR a deliberate
+    drop. Either way the entrant is silently absent for the night;
+    structured note tells the operator why."""
+    if not Path(weights_path).exists():
+        return None, f"stacked_ensemble: skipped (no weights at {weights_path})"
+    try:
+        ensemble = StackedEnsemble(fitted, weights_path=weights_path)
+    except (FileNotFoundError, ValueError) as exc:
+        return None, f"stacked_ensemble: skipped ({exc})"
+    return ensemble, f"stacked_ensemble: over {len(ensemble._members)} members"
+
+
 def run_simulations(
     fitted: list[Model],
     matches: pd.DataFrame,
@@ -298,7 +317,12 @@ def run(
     bma_entrants, bma_notes = _bma_entrants(
         fitted, backtest_db=(backtest_db if backtest_db is not None else BACKTEST_DB))
     report["notes"] += bma_notes
-    entrants = fitted + ([market] if market is not None else []) + bma_entrants
+    stacked, stacked_note = _stacked_entrant(fitted)
+    report["notes"].append(stacked_note)
+    entrants = (fitted
+                + ([market] if market is not None else [])
+                + bma_entrants
+                + ([stacked] if stacked is not None else []))
     report["models"] = [m.model_id for m in entrants]
 
     # PREDICT — idempotent per-fixture claims for the window.
