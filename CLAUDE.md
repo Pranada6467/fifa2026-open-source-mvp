@@ -13,12 +13,74 @@ leaderboard** ranking models by out-of-sample log-loss / Brier / RPS.
 Full context: `docs/PLAN.md` (the approved engineering plan — source of truth),
 `docs/DESIGN.md` (the why), `docs/block-v-findings.md` (verified facts).
 
-## Current status (2026-06-11)
+## Current status (2026-06-20)
 **Block V (verification spike): COMPLETE — all 6 items pass, V4 user-verified.**
 **Block 0 (calibration spine): COMPLETE (T1–T8).**
 **Block 1 (tournament simulator): COMPLETE (T9–T11).**
 **Block 2 (technique ladder): COMPLETE (T12–T14). The build is feature-complete;
 from here the project is OPERATING the loop, not building it.**
+
+**Accuracy plan (2026-06-19/20): mechanism + 5/5 gate verdicts shipped.** Plan
+file `~/.claude/plans/encapsulated-sparking-dove.md`; consolidated outcomes in
+`docs/tuning/PHASE_OUTCOMES.md`. What landed in production:
+- **Phase 0 — T1+T2:** `[bayesian]` extras now installed on CI nightly;
+  `hierarchical_poisson` joins the live roster; per-model 5-min SIGALRM
+  timeout wrapper in `orchestrate._fit_roster` (D4) drops slow entrants
+  without killing the loop.
+- **Phase 4 — S25 temperature + S20 isotonic calibration:** new
+  `src/fifapreds/calibration/` package; LOTO discipline (D6) over the
+  backtest; publisher emits `leaderboard.parquet` with a new
+  `calibration ∈ {raw, temperature, isotonic}` column (distinct from the
+  E2 `track ∈ {backtest, live}` column to avoid collision). Viewer hero
+  has a pill toggle (DD2) anchored above the verdict, with an
+  "experimental, n≈64 holdout" caption for calibrated tracks.
+- **Phase 5a — S22 BMA:** `src/fifapreds/ensemble/{bma,stacking}.py`.
+  `BMAEnsemble` + `BMAGoalsEnsemble` both join the live roster when
+  `data/backtest.db` has history for their members; LOTO-derived
+  softmax weights at construction (`exp(-L_i/T)`, T=1). Per D5/D7 the
+  goals ensemble raises at `__init__` on a non-goals member.
+- **Phase 5b — S19 stacking:** mechanism shipped (`StackedEnsemble` +
+  `scripts/train_stacker.py` + `docs/stacker_refresh.md`) but the gate
+  FAILED (gap +0.0076 vs SE 0.0170); `data/stacking_weights.json` is
+  absent and the orchestrator's stacking entrant skips with a
+  structured note. Closest near-miss; revisit after WC2026 adds a 4th
+  tournament.
+- **Phase 5c — Item 11 modal scoreline:** `modal_scoreline_from_grid` +
+  `modal_scoreline_label` in `publish/board.py`. `upcoming.parquet` /
+  `scoreline_topn.parquet` gain `modal_h` + `modal_a` columns. Viewer
+  match-odds hero now shows `{home} {modal_h}–{modal_a} {away}` with a
+  small-gray explainer referencing the argmax (which stays in the audit
+  expander). 71% of WC2026 fixtures get a different headline.
+- **Phase 5d — DD4 divergence banner:** `divergence_banner()` helper +
+  amber `st.warning` in the calibration hero when live freq escapes
+  the Wilson interval around the calibrated `p_mean`. Mid-tournament
+  D10 policy: weights stay frozen, drift gets surfaced honestly.
+
+**Five single-knob gates FAILED** at the > 1 SE bar (gap-vs-SE in
+parens): S6 ν tune (0.11), S1 DC tournament weighting (0.13), S2 NegBin
+(0.20), S9 BivariatePoisson (0.19), S19 stacking (0.45). The wrapper
+classes + tuning scripts + gate docs all SHIP; the roster wiring does
+NOT. Pattern is consistent with the eng-review outside voice: at ~64
+graded matches per LOTO holdout the bootstrap SE is ±0.02–0.04, larger
+than any single-knob lift produces. The variants live in
+`src/fifapreds/models/{negbin,bivariate}.py`, `roster.py`'s
+`DixonColesTournamentWeighted`, and the `scripts/tune_*` scripts —
+anyone can instantiate them; the gate decides whether they ship to
+`default_roster()`.
+
+**Phase 3 — S13 Transfermarkt: DEFERRED** (`docs/tuning/transfermarkt_deferred.md`).
+Needs a manual snapshot scrape from a fragile page + the variant's
+"validation is it didn't crash" caveat made the gate unfair. Path
+forward documented for when the operational moment is right.
+
+**Empirical retro on graded WC2026 matches (n=33, ~40 model-rows):**
+- Modal scoreline: 6/40 = **15%** exact-score hits vs argmax 3/40 = 7.5% (doubled).
+- Temperature calibration: neutral (Δlog-loss ±0.002).
+- **Isotonic calibration HURTS on this sample (+1.08 for dixon_coles, +0.57 for elo_baseline)** — backtest-fit clipping fails on this high-scoring tournament. Decide whether to flip the viewer default off isotonic; the DD4 banner is the alternative surface.
+- BMA on backtest-known members (DC + Elo): worse by +0.013 than DC alone — near-equal LOTO weights pulled the stronger model down.
+- Tests: 164 → 248 passing (+84).
+
+
 **Phase 2 Wave 1 — E1 automated nightly loop: DONE 2026-06-12** (scheduled
 Action commits DB+artifacts; violations gate exits 2 and turns the build red)
 **+ T2 fit-failure resilience** (`_fit_roster` drops an entrant on
@@ -52,8 +114,16 @@ entrant, goals-capable. Key: Qatar vs Switzerland 6.6% (vs DC 2.3%, Elo 10%).
 scoreline-log-loss (tail bucket), exact-score top-1/top-3, O/U 2.5 + BTTS from
 grids, ET excluded. Wired into orchestrator + publisher (scoreline leaderboard +
 O/U/BTTS calibration artifacts).
-Next: E7 (isotonic recalibration — conditional on miscalibration) → E8 (market
-score grid — conditional on totals odds).
+**Next session pickup**: (1) decide whether to flip the viewer's calibration
+toggle default from `isotonic` back to `raw` given the live-sample harm —
+DD2 already exposes the choice, just a `DEFAULT_TRACK_PILL` constant change.
+(2) E8 (market score grid from totals odds) remains conditional on Odds API
+tier. (3) Backtest the rest of the roster (`elo_decay`, `elo_importance`,
+`dixon_coles_slow_xi`, `hierarchical_poisson`, `neg_bin`, `bivariate_poisson`)
+so stacking has more features and BMA has weights for all 6+ entrants
+instead of just 2. (4) Re-run all five dropped gates after WC2026 ends
+(adds a 4th tournament; the bootstrap band narrows ~1/√(n) — stacking is
+the closest candidate to flip).
 
 Done:
 - `ingest.py` (T1) — `data/processed/matches.parquet` from martj42.
