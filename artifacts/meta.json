@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-07-07T10:07:56.401232+00:00",
-  "code_version": "46d8e6d",
-  "data_through": "2026-07-06",
+  "generated_at": "2026-07-08T09:09:05.615185+00:00",
+  "code_version": "f4fd644",
+  "data_through": "2026-07-07",
   "counts": {
-    "upcoming": 45,
+    "upcoming": 36,
     "leaderboard": 31,
     "scored": 5250,
     "calibration": 190,
@@ -14,7 +14,7 @@
     "tournament": 144,
     "scoreline_leaderboard": 4,
     "scoreline_calibration": 80,
-    "scoreline_topn": 20
+    "scoreline_topn": 16
   },
   "models": [
     "bma_ensemble",
