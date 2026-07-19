@@ -1,20 +1,20 @@
 {
-  "generated_at": "2026-07-18T08:21:41.622212+00:00",
-  "code_version": "ae92ef2",
-  "data_through": "2026-07-15",
+  "generated_at": "2026-07-19T08:44:09.135923+00:00",
+  "code_version": "b59c52d",
+  "data_through": "2026-07-18",
   "counts": {
-    "upcoming": 16,
+    "upcoming": 8,
     "leaderboard": 31,
-    "scored": 5358,
+    "scored": 5366,
     "calibration": 190,
-    "surprises": 102,
+    "surprises": 103,
     "disagreement": 0,
     "leaderboard_bands": 11,
     "qualification": 192,
     "tournament": 96,
     "scoreline_leaderboard": 4,
     "scoreline_calibration": 80,
-    "scoreline_topn": 6
+    "scoreline_topn": 3
   },
   "models": [
     "bma_ensemble",
